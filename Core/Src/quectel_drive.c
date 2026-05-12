@@ -1,9 +1,12 @@
 #include "quectel_drive.h"
 #include "main.h"
+#include "tasks.h"
 #include "ff.h"
 #include <stdio.h>
 #include <string.h>
 #include "credentials.h"
+
+#define MODEM_SIMULATION_ENABLED 1
 
 static UART_HandleTypeDef *_modem_uart;
 static char modem_rx_buffer[MODEM_BUFFER_SIZE];
@@ -105,35 +108,31 @@ void Modem_Init(UART_HandleTypeDef *huart) {
 }
 
 HAL_StatusTypeDef Modem_PowerOn(void) {
-    printf("[MODEM] Iniciando secuencia de encendido (EC25)...\r\n");
-    
-    // 0. Pre-check: Enviar AT por si ya esta encendido
-    uint8_t dummy;
-    while(HAL_UART_Receive(_modem_uart, &dummy, 1, 0) == HAL_OK); // Flush
-    __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
-    
-    // Intentar AT rapido
-    if (Modem_SendAT("AT", "OK", 500) == HAL_OK) {
-        printf("[MODEM] El modem ya estaba respondiendo. Reiniciando secuencia logica.\r\n");
-        // Opcional: Podriamos asumir que esta listo, pero mejor asegurar un estado conocido
-        // O simplemente retornar OK si confiamos en el estado.
-        // Vamos a asumir OK para ganar tiempo, pero enviamos ATE0 por si acaso.
-        Modem_SendAT("ATE0", "OK", 500);
-        return HAL_OK;
-    }
-    
+#if MODEM_SIMULATION_ENABLED
+    printf("[MODEM-SIM] PowerOn (simulated)\r\n");
+    return HAL_OK;
+#else
     // 1. Asegurar estado inicial APAGADO (PB0 -> HIGH)
     HAL_GPIO_WritePin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin, GPIO_PIN_SET);
+    HAL_Delay(100);
+    GPIO_PinState pb0_state = HAL_GPIO_ReadPin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin);
+    printf("[MODEM][DIAG] PB0 escrito HIGH (apagar), leido: %s\r\n", pb0_state == GPIO_PIN_SET ? "HIGH (OK)" : "LOW (FALLO!)");
     HAL_Delay(2000); // Aumentado a 2s para asegurar descarga
     
     // 2. ENCENDER HAT (PB0 -> LOW)
     HAL_GPIO_WritePin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin, GPIO_PIN_RESET);
+    HAL_Delay(100);
+    pb0_state = HAL_GPIO_ReadPin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin);
+    printf("[MODEM][DIAG] PB0 escrito LOW (encender), leido: %s\r\n", pb0_state == GPIO_PIN_RESET ? "LOW (OK)" : "HIGH (FALLO!)");
     printf("[MODEM] HAT Energizado. Esperando estabilizacion de fuente (5s)...\r\n");
     HAL_Delay(5000); // Aumentado a 5s
     
     // 3. Pulso en PWRKEY (PB1) para encender el EC25
     printf("[MODEM] Generando pulso en PWRKEY (2s)...\r\n");
     HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_SET);
+    HAL_Delay(100);
+    GPIO_PinState pwrkey_state = HAL_GPIO_ReadPin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin);
+    printf("[MODEM][DIAG] PWRKEY escrito HIGH, leido: %s\r\n", pwrkey_state == GPIO_PIN_SET ? "HIGH (OK)" : "LOW (FALLO!)");
     HAL_Delay(2000); 
     HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_RESET);
     
@@ -141,24 +140,36 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
     
     uint32_t start_firmware = HAL_GetTick();
     uint32_t null_count = 0;
+    uint32_t total_bytes = 0;
     char rdy_buf[3] = {0};
     uint8_t rdy_idx = 0;
     uint8_t rdy_printed = 0;
 
     // Aumentado timeout de espera de RDY a 30s para EC25-ADFL
+    uint32_t last_heartbeat = 0;
     while(HAL_GetTick() - start_firmware < 30000) {
         // Verificar aborto por evento
-        if (g_modem_abort_enabled && g_event_pending) {
-             printf("[MODEM] Abortando PowerOn por evento.\r\n");
-             return HAL_BUSY; // Usar HAL_BUSY para indicar interrupcion
+        if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) {
+              printf("[MODEM] Abortando PowerOn por evento.\r\n");
+              return HAL_BUSY; // Usar HAL_BUSY para indicar interrupcion
+        }
+
+        // Heartbeat cada 5s para confirmar que el firmware no esta colgado
+        uint32_t elapsed = HAL_GetTick() - start_firmware;
+        if (elapsed - last_heartbeat >= 5000) {
+            printf("[MODEM][DIAG] Heartbeat t=%lu ms, bytes_recibidos=%lu\r\n",
+                   (unsigned long)elapsed, (unsigned long)total_bytes);
+            last_heartbeat = elapsed;
         }
 
         uint8_t byte;
         __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
         
         if(HAL_UART_Receive(_modem_uart, &byte, 1, 10) == HAL_OK) {
+            total_bytes++;
             if (byte == 0x00) { null_count++; continue; }
             null_count = 0;
+            printf("[MODEM][RX] Byte=0x%02X ('%c')\r\n", byte, (byte>=32 && byte<=126) ? byte : '.');
             if (!rdy_printed) {
                 rdy_buf[rdy_idx % 3] = (char)byte;
                 rdy_idx++;
@@ -172,11 +183,76 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
         }
     }
     printf("\r\n");
+    printf("[MODEM][DIAG] Total bytes recibidos: %lu, Null bytes: %lu\r\n",
+           (unsigned long)total_bytes, (unsigned long)null_count);
+    if (total_bytes == 0) {
+        printf("[MODEM][DIAG] RESULTADO: CERO bytes recibidos.\r\n");
+        printf("[MODEM][DIAG] -> Modem no enciende (fuente/HAT) o RX desconectado.\r\n");
+        printf("[MODEM][DIAG] Intentando FALLBACK: PWRKEY directo (HAT ya alimentado)...\r\n");
+        
+        // Fallback: omitir control de HAT_PWR_OFF, intentar pulso PWRKEY directo
+        // Esto cubre el caso donde el HAT ya tiene power pero PB0 no funciona como se espera
+        HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_SET);
+        HAL_Delay(2000);
+        HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_RESET);
+        printf("[MODEM][DIAG] Pulso PWRKEY directo enviado. Esperando 20s...\r\n");
+        
+        // Reset contadores y reintentar espera
+        total_bytes = 0;
+        null_count = 0;
+        rdy_printed = 0;
+        rdy_idx = 0;
+        memset(rdy_buf, 0, sizeof(rdy_buf));
+        last_heartbeat = 0;
+        uint32_t fb_start = HAL_GetTick();
+        
+        while(HAL_GetTick() - fb_start < 20000) {
+        if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) return HAL_BUSY;
+            
+            uint32_t fb_elapsed = HAL_GetTick() - fb_start;
+            if (fb_elapsed - last_heartbeat >= 5000) {
+                printf("[MODEM][DIAG] FB Heartbeat t=%lu ms, bytes=%lu\r\n",
+                       (unsigned long)fb_elapsed, (unsigned long)total_bytes);
+                last_heartbeat = fb_elapsed;
+            }
+            
+            uint8_t byte;
+            __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
+            
+            if(HAL_UART_Receive(_modem_uart, &byte, 1, 10) == HAL_OK) {
+                total_bytes++;
+                if (byte == 0x00) { null_count++; continue; }
+                null_count = 0;
+                printf("[MODEM][RX] Byte=0x%02X ('%c')\r\n", byte, (byte>=32 && byte<=126) ? byte : '.');
+                if (!rdy_printed) {
+                    rdy_buf[rdy_idx % 3] = (char)byte;
+                    rdy_idx++;
+                    if (rdy_buf[(rdy_idx-3)%3] == 'R' && rdy_buf[(rdy_idx-2)%3] == 'D' && rdy_buf[(rdy_idx-1)%3] == 'Y') {
+                        printf("RDY\r\n");
+                        rdy_printed = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        printf("[MODEM][DIAG] FB Total bytes: %lu, Null bytes: %lu\r\n",
+               (unsigned long)total_bytes, (unsigned long)null_count);
+        if (total_bytes == 0) {
+            printf("[MODEM][DIAG] FB tambien sin bytes -> problema HARDWARE confirmado.\r\n");
+            printf("[MODEM][DIAG] Verificar: fuente 2A+, TX/RX cruzados, GND comun, LED status EC25.\r\n");
+        } else {
+            printf("[MODEM][DIAG] FB recibio datos! PB0 (HAT_PWR_OFF) es el problema.\r\n");
+        }
+    } else if (null_count > total_bytes / 2) {
+        printf("[MODEM][DIAG] RESULTADO: Muchos nulls -> posible baudrate incorrecto.\r\n");
+    } else {
+        printf("[MODEM][DIAG] RESULTADO: Datos recibidos pero sin RDY claro.\r\n");
+    }
     
     // 4. Intentar sincronizacion AT
     printf("[MODEM] Sincronizando baudrate...\r\n");
     for(int i=0; i<30; i++) { // Aumentado a 30 intentos (15s)
-        if (g_modem_abort_enabled && g_event_pending) return HAL_BUSY;
+        if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) return HAL_BUSY;
 
         // Limpiar buffer y errores antes de cada comando AT
         uint8_t d;
@@ -205,6 +281,7 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
 
     printf("[MODEM] Error de comunicacion inicial.\r\n");
     return HAL_ERROR;
+#endif
 }
 
 void Modem_PowerOff(void) {
@@ -220,6 +297,31 @@ void Modem_PowerOff(void) {
 }
 
 HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t timeout) {
+#if MODEM_SIMULATION_ENABLED
+    printf("[MODEM-SIM] AT: %s -> espera: %s\r\n", command, expected_reply);
+    if (strstr(command, "+CSQ") != NULL) {
+        printf("[MODEM-SIM] RX: +CSQ: 20,0\r\n");
+    } else if (strstr(command, "+CPIN?") != NULL) {
+        printf("[MODEM-SIM] RX: +CPIN: READY\r\n");
+    } else if (strstr(command, "CEREG?") != NULL || strstr(command, "CREG?") != NULL) {
+        printf("[MODEM-SIM] RX: +CEREG: 0,1\r\n");
+    } else if (strstr(command, "QIACT") != NULL) {
+        printf("[MODEM-SIM] RX: OK (PDP activo)\r\n");
+    } else if (strstr(command, "QHTTPURL") != NULL) {
+        printf("[MODEM-SIM] RX: CONNECT\r\n");
+    } else if (strstr(command, "QHTTPPOST") != NULL) {
+        printf("[MODEM-SIM] RX: CONNECT\r\n");
+    } else if (strstr(command, "QHTTPREAD") != NULL) {
+        printf("[MODEM-SIM] RX: +QHTTPPOST: 0,200,0\r\n");
+    } else if (strstr(command, "QHTTPCFG") != NULL || strstr(command, "QSSLCFG") != NULL) {
+        printf("[MODEM-SIM] RX: OK\r\n");
+    } else {
+        printf("[MODEM-SIM] RX: %s\r\n", expected_reply);
+    }
+    snprintf(modem_rx_buffer, sizeof(modem_rx_buffer), "%s", expected_reply);
+    HAL_Delay(20);
+    return HAL_OK;
+#else
     char full_cmd[128];
     snprintf(full_cmd, sizeof(full_cmd), "%s\r\n", command);
     
@@ -238,12 +340,11 @@ HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t tim
     uint16_t idx = 0;
     
     while ((HAL_GetTick() - start_tick) < timeout) {
-        if (g_modem_abort_enabled && g_event_pending) {
+        if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) {
             printf("[MODEM][ABORT]\r\n");
             return HAL_ERROR;
         }
         uint8_t byte;
-        // Aumentado el timeout individual a 50ms para ser mas tolerante
         if (HAL_UART_Receive(_modem_uart, &byte, 1, 50) == HAL_OK) {
             if (idx < MODEM_BUFFER_SIZE - 1) {
                 modem_rx_buffer[idx++] = byte;
@@ -251,24 +352,22 @@ HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t tim
             }
         }
         
-        // Verificar si ya tenemos la respuesta esperada
         if (strstr(modem_rx_buffer, expected_reply) != NULL) {
             return HAL_OK;
         }
         
-        // Verificar errores comunes
         if (strstr(modem_rx_buffer, "ERROR") != NULL) {
             printf("[MODEM][AT ERR] Cmd='%s' Resp='%s'\r\n", command, modem_rx_buffer);
             return HAL_ERROR;
         }
 
-        // Si hay un error de hardware durante la recepcion, limpiarlo
         if (__HAL_UART_GET_FLAG(_modem_uart, UART_FLAG_ORE)) {
             __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE);
         }
     }
     printf("[MODEM][AT TIMEOUT] Cmd='%s' Resp='%s'\r\n", command, modem_rx_buffer);
     return HAL_TIMEOUT;
+#endif
 }
 
 HAL_StatusTypeDef Modem_WaitFor(const char* expected, uint32_t timeout) {
@@ -330,6 +429,28 @@ HAL_StatusTypeDef Modem_CheckConnection(void) {
 HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
     printf("[MODEM] Iniciando subida de %s...\r\n", filename);
 
+#if MODEM_SIMULATION_ENABLED
+    printf("[MODEM-SIM] PowerOn -> OK\r\n");
+    printf("[MODEM-SIM] BringUpNetwork -> OK\r\n");
+    printf("[MODEM-SIM] Abriendo archivo: %s\r\n", filename);
+    FIL sf;
+    if (f_open(&sf, filename, FA_READ) == FR_OK) {
+        DWORD sz = f_size(&sf);
+        printf("[MODEM-SIM] Tamano archivo: %lu bytes\r\n", (unsigned long)sz);
+        printf("[MODEM-SIM] URL: %s?filename=%s&key=%s\r\n", BACKEND_UPLOAD_URL, filename, BACKEND_API_KEY);
+        printf("[MODEM-SIM] Conectando...\r\n");
+        printf("[MODEM-SIM] Enviando cabeceras HTTP...\r\n");
+        printf("[MODEM-SIM] Enviando %lu bytes de datos...\r\n", (unsigned long)sz);
+        printf("[MODEM-SIM] Esperando respuesta...\r\n");
+        printf("[MODEM-SIM] Respuesta: 200 OK (simulada)\r\n");
+        f_close(&sf);
+    } else {
+        printf("[MODEM-SIM] ERROR: No se pudo abrir %s\r\n", filename);
+        return HAL_ERROR;
+    }
+    printf("[MODEM-SIM] Subida finalizada (simulada).\r\n");
+    return HAL_OK;
+#else
     if (Modem_PowerOn() != HAL_OK) return HAL_ERROR;
     if (Modem_BringUpNetwork() != HAL_OK) {
         Modem_PowerOff();
@@ -595,6 +716,7 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
     printf("[MODEM] Credenciales no configuradas (Drive/Backend).\r\n");
     Modem_PowerOff();
     return HAL_ERROR;
+#endif
 }
 
 HAL_StatusTypeDef Modem_DownloadConfig(char* out_buffer, uint16_t out_size) {

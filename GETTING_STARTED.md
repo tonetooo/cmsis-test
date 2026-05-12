@@ -204,7 +204,7 @@ make -j4
 ### Day 6-7: STM32CubeMX Timebase Configuration
 
 #### Task 4a: Change Timebase Source
-1. Open **AWTAS_DEFINITIVE.ioc** in STM32CubeMX
+1. Open **HERMES-A1-CMSIS.ioc** in STM32CubeMX
 2. Go to **System Core → SYS**
 3. Find **Timebase Source**
    - Current: `SysTick`

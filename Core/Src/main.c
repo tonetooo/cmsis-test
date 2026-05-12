@@ -18,6 +18,10 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
+#include "spi.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -25,6 +29,7 @@
 #include "adxl355.h"
 #include "ff.h"
 #include "quectel_drive.h"
+#include "tasks.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -47,15 +52,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-SPI_HandleTypeDef hspi1;
-SPI_HandleTypeDef hspi2;
-
-UART_HandleTypeDef huart1;
-UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-FATFS fs;
-FIL fil;
 FRESULT fres;
 // Shadow variables for display
 const char* range_str[] = {"+/- 2g", "+/- 4g", "+/- 8g"};
@@ -66,8 +64,8 @@ float trigger_g = 0.02f;
 uint8_t hpf_enabled = 0;
 uint8_t act_count = 5;
 uint8_t operation_mode = 2;
-volatile uint8_t g_event_pending = 0;
 volatile uint8_t g_modem_abort_enabled = 0;
+osMutexId_t uart_mutexHandle = NULL;
 
 // Placeholder variables for future power measurement peripheral
 float voltage_val = 0.0f;
@@ -77,204 +75,15 @@ float power_val = 0.0f;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_USART2_UART_Init(void);
-static void MX_SPI2_Init(void);
-static void MX_USART1_UART_Init(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-void Print_Menu(void);
-static void Run_Auto_Mode(void);
+
+void Apply_Remote_Config(const char* key, const char* val);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-typedef enum {
-    PWR_STATE_IDLE,
-    PWR_STATE_LOW_POWER_WAITING,
-    PWR_STATE_ACTIVE_RECORDING
-} PowerState_t;
-
-typedef enum {
-    AUTO_STATE_IDLE_LOW_POWER,
-    AUTO_STATE_ACQUISITION,
-    AUTO_STATE_UPLOAD_PENDING,
-    AUTO_STATE_CONFIG_CHECK
-} AutoState_t;
-
-void Print_Power_State(PowerState_t state) {
-    printf("\r\n[POWER STATE: ");
-    switch(state) {
-        case PWR_STATE_IDLE:               printf("IDLE (Main Menu)"); break;
-        case PWR_STATE_LOW_POWER_WAITING:  printf("LOW POWER (Sensor Armed - STM32 Sleep)"); break;
-        case PWR_STATE_ACTIVE_RECORDING:   printf("ACTIVE (Acquisition & SD Write)"); break;
-    }
-    printf("]\r\n");
-}
-
-void Print_Menu(void) {
-    Print_Power_State(PWR_STATE_IDLE);
-    printf("\r\n--- ADXL355 Control Menu ---\r\n");
-    printf("[SENSOR] Current Settings: Range: %s, ODR: %s\r\n", range_str[cur_range_idx], odr_str[cur_odr_idx]);
-    printf("[SENSOR] m: Monitor Data (G)\r\n");
-    printf("[SENSOR] l: Log Data to CSV\r\n");
-    printf("[SENSOR] r: Set Range\r\n");
-    printf("[SENSOR] o: Set ODR\r\n");
-    printf("[SENSOR] t: Set Trigger (Current: %.2f G)\r\n", trigger_g);
-    printf("[SENSOR] i: Interrupt Mode (Wake-on-Motion)\r\n");
-    printf("[SENSOR] q: Stop/Back\r\n");
-}
-
-static int Queue_Append(const char* name) {
-    FIL qf;
-    FRESULT res = f_open(&qf, "QUEUE.TXT", FA_OPEN_APPEND | FA_WRITE);
-    if (res != FR_OK) {
-        res = f_open(&qf, "QUEUE.TXT", FA_CREATE_ALWAYS | FA_WRITE);
-        if (res != FR_OK) {
-            return -1;
-        }
-    }
-    char line[40];
-    size_t len = strlen(name);
-    if (len > sizeof(line) - 3) {
-        len = sizeof(line) - 3;
-    }
-    memcpy(line, name, len);
-    line[len++] = '\r';
-    line[len++] = '\n';
-    UINT bw = 0;
-    res = f_write(&qf, line, len, &bw);
-    f_close(&qf);
-    if (res != FR_OK || bw != len) {
-        return -1;
-    }
-    return 0;
-}
-
-static int Queue_Peek(char* name, size_t name_size) {
-    FIL qf;
-    FRESULT res = f_open(&qf, "QUEUE.TXT", FA_READ);
-    if (res != FR_OK) {
-        return -1;
-    }
-    char line[40];
-    while (f_gets(line, sizeof(line), &qf)) {
-        char* p = line;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-            p++;
-        }
-        if (*p == 0 || *p == '#') {
-            continue;
-        }
-        char* end = p;
-        while (*end && *end != '\r' && *end != '\n') {
-            end++;
-        }
-        size_t len = (size_t)(end - p);
-        if (len >= name_size) {
-            len = name_size - 1;
-        }
-        memcpy(name, p, len);
-        name[len] = 0;
-        f_close(&qf);
-        return 0;
-    }
-    f_close(&qf);
-    return -1;
-}
-
-static int Queue_Pop(char* name, size_t name_size) {
-    FIL qf;
-    FRESULT res = f_open(&qf, "QUEUE.TXT", FA_READ);
-    if (res != FR_OK) {
-        return -1;
-    }
-    FIL tmp;
-    res = f_open(&tmp, "QUEUE_TMP.TXT", FA_CREATE_ALWAYS | FA_WRITE);
-    if (res != FR_OK) {
-        f_close(&qf);
-        return -1;
-    }
-    char line[40];
-    int found = 0;
-    while (f_gets(line, sizeof(line), &qf)) {
-        char* p = line;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-            p++;
-        }
-        if (!found && *p != 0 && *p != '#') {
-            char* end = p;
-            while (*end && *end != '\r' && *end != '\n') {
-                end++;
-            }
-            size_t len = (size_t)(end - p);
-            if (len >= name_size) {
-                len = name_size - 1;
-            }
-            memcpy(name, p, len);
-            name[len] = 0;
-            found = 1;
-            continue;
-        }
-        UINT bw = 0;
-        res = f_write(&tmp, line, strlen(line), &bw);
-        if (res != FR_OK) {
-            f_close(&qf);
-            f_close(&tmp);
-            return -1;
-        }
-    }
-    f_close(&qf);
-    f_close(&tmp);
-    if (!found) {
-        f_unlink("QUEUE_TMP.TXT");
-        return -1;
-    }
-    f_unlink("QUEUE.TXT");
-    f_rename("QUEUE_TMP.TXT", "QUEUE.TXT");
-    return 0;
-}
-
-static void Queue_RemoveFile(const char* name) {
-    FIL qf;
-    FRESULT res = f_open(&qf, "QUEUE.TXT", FA_READ);
-    if (res != FR_OK) {
-        return;
-    }
-    FIL tmp;
-    res = f_open(&tmp, "QUEUE_TMP.TXT", FA_CREATE_ALWAYS | FA_WRITE);
-    if (res != FR_OK) {
-        f_close(&qf);
-        return;
-    }
-    char line[40];
-    while (f_gets(line, sizeof(line), &qf)) {
-        char* p = line;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-            p++;
-        }
-        if (*p == 0 || *p == '#') {
-            UINT bw = 0;
-            f_write(&tmp, line, strlen(line), &bw);
-            continue;
-        }
-        char* end = p;
-        while (*end && *end != '\r' && *end != '\n') {
-            end++;
-        }
-        size_t len = (size_t)(end - p);
-        size_t name_len = strlen(name);
-        if (len == name_len && strncmp(p, name, len) == 0) {
-            continue;
-        }
-        UINT bw = 0;
-        f_write(&tmp, line, strlen(line), &bw);
-    }
-    f_close(&qf);
-    f_close(&tmp);
-    f_unlink("QUEUE.TXT");
-    f_rename("QUEUE_TMP.TXT", "QUEUE.TXT");
-}
 
 void Apply_Remote_Config(const char* key, const char* val) {
     if (strcmp(key, "RANGE") == 0) {
@@ -335,651 +144,6 @@ void Apply_Remote_Config(const char* key, const char* val) {
     }
 }
 
-static void Run_Auto_Mode(void) {
-    AutoState_t state = AUTO_STATE_IDLE_LOW_POWER;
-    uint32_t last_cfg = HAL_GetTick();
-    char filename[20];
-    char last_recorded[20] = {0};
-    char buffer[256];
-    unsigned int bytes_written;
-    printf("[AUTO] Entrando en modo autonomo (FSM)\r\n");
-    ADXL355_Config_WakeOnMotion(trigger_g, act_count);
-    printf("[AUTO] Wake-on-motion armado (%.2f G, count=%d)\r\n", trigger_g, act_count);
-    while (1) {
-        switch (state) {
-            case AUTO_STATE_IDLE_LOW_POWER: {
-                // Heartbeat log para indicar que el sistema esta vivo esperando
-                static uint32_t last_idle_print = 0;
-                if (HAL_GetTick() - last_idle_print > 10000) { // Cada 10s
-                     printf("[AUTO] IDLE: Sistema armado y esperando evento (%.2f G)...\r\n", trigger_g);
-                     last_idle_print = HAL_GetTick();
-                }
-
-                if (g_event_pending || HAL_GPIO_ReadPin(ADXL_INT1_GPIO_Port, ADXL_INT1_Pin) == GPIO_PIN_SET) {
-                    g_event_pending = 0;
-                    printf("[AUTO] Trigger detectado, iniciando adquisicion\r\n");
-                    state = AUTO_STATE_ACQUISITION;
-                } else {
-                    if (HAL_GetTick() - last_cfg > 1200000) {
-                        state = AUTO_STATE_CONFIG_CHECK;
-                    } else {
-                        HAL_Delay(50);
-                    }
-                }
-            } break;
-            case AUTO_STATE_ACQUISITION: {
-                for (int i = 1; i < 999; i++) {
-                    sprintf(filename, "TRIG_%03d.CSV", i);
-                    if (f_open(&fil, filename, FA_READ) != FR_OK) { break; }
-                    f_close(&fil);
-                }
-                if (f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-                    sprintf(buffer, "timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n");
-                    f_write(&fil, buffer, strlen(buffer), &bytes_written);
-                    uint32_t start_tick = HAL_GetTick();
-                    uint32_t rec_start = HAL_GetTick();
-                    uint32_t read_index = 0;
-                    uint8_t earthquake_detected = 0;
-                    uint32_t settling_start = 0;
-                    uint8_t in_settling = 0;
-                    float prev_mag = -1.0f;
-                    const float static_delta = 0.005f;
-                    uint32_t settling_duration = 3000;
-                    const uint32_t min_duration = 3000;
-                    uint32_t last_print = HAL_GetTick();
-                    
-                        // TIMEOUT DINAMICO: 
-                        // Si el evento dura poco, salimos rapido. Si dura mucho, cortamos en 15 minutos (900000 ms).
-                        while ((HAL_GetTick() - rec_start) < 900000) {
-                            ADXL355_Data_t d;
-                            ADXL355_Read_Data(&d);
-
-                            float current_mag = sqrtf(d.x_g * d.x_g + d.y_g * d.y_g);
-
-                            if (current_mag < trigger_g) {
-                                if (!in_settling) {
-                                    in_settling = 1;
-                                    settling_start = HAL_GetTick();
-                                    printf("\r\n[AUTO] SETTLING: Silencio detectado (<%.2f G). Esperando %lu ms...\r\n", trigger_g, (unsigned long)settling_duration);
-                                }
-                                
-                                float delta = (prev_mag < 0) ? 0.0f : fabsf(current_mag - prev_mag);
-                                if (delta > static_delta) {
-                                    // if ((HAL_GetTick() - settling_start) > 500) {
-                                    //     printf("[AUTO] Movimiento residual detectado. Reiniciando settling.\r\n");
-                                    // }
-                                    // settling_start = HAL_GetTick();
-                                }
-                                
-                                // CONDICION DE SALIDA:
-                                // 1. Estamos en periodo de settling
-                                // 2. Ha pasado el tiempo de settling (3s)
-                                // 3. Y ADEMAS hemos grabado al menos el tiempo minimo (3s)
-                                if ((HAL_GetTick() - settling_start) > settling_duration) {
-                                    if ((HAL_GetTick() - rec_start) > min_duration) {
-                                        printf("\r\n[AUTO] EVENT FINISHED: System settled (%.1f s duration).\r\n", (float)(HAL_GetTick() - rec_start)/1000.0f);
-                                        break;
-                                    }
-                                }
-                            } else {
-                                if (in_settling) {
-                                    printf("\r\n[AUTO] NEW EVENT DETECTED: Interrupting settling...\r\n");
-                                }
-                                in_settling = 0;
-                            }
-                            prev_mag = current_mag;
-
-                            if ((d.x_g > 2.0f || d.x_g < -2.0f) ||
-                                (d.y_g > 2.0f || d.y_g < -2.0f) ||
-                                (d.z_g > 2.0f || d.z_g < -2.0f)) {
-                                printf("\r\n[AUTO] EARTHQUAKE/SHOCK DETECTED (>2.0G)! Aborting...\r\n");
-                                earthquake_detected = 1;
-                                break;
-                            }
-                            (void)ADXL355_Get_FIFO_Entries();
-                            uint32_t current_tick = HAL_GetTick();
-                            uint32_t elapsed_ms = current_tick - start_tick;
-                            uint32_t base_sec = 1767817653;
-                            uint32_t rel_sec = elapsed_ms / 1000;
-                            uint32_t rel_us = (elapsed_ms % 1000) * 1000;
-                            int32_t x_ug = (int32_t)(d.x_g * 1000000);
-                            int32_t y_ug = (int32_t)(d.y_g * 1000000);
-                            int32_t z_ug = (int32_t)(d.z_g * 1000000);
-                            sprintf(buffer, "%lu.%06lu;%lu.%06lu;%lu.%06lu;%ld.%06ld;%ld.%06ld;%ld.%06ld;%.2f;%.2f;%.2f\r\n",
-                                    rel_sec, rel_us, base_sec + rel_sec, rel_us, base_sec + rel_sec, rel_us,
-                                    x_ug/1000000, (x_ug<0?-x_ug:x_ug)%1000000,
-                                    y_ug/1000000, (y_ug<0?-y_ug:y_ug)%1000000,
-                                    z_ug/1000000, (z_ug<0?-z_ug:z_ug)%1000000,
-                                    voltage_val, current_val, power_val);
-                            
-                            // ESCRITURA FORZADA: Forzar volcado a disco fisico cada 100 muestras o 1 segundo
-                            // para evitar que los datos se queden en cache RAM y se pierdan si se cierra el archivo rapido.
-                            UINT bw;
-                            f_write(&fil, buffer, strlen(buffer), &bw);
-                            if (read_index % 100 == 0) {
-                                f_sync(&fil); 
-                            }
-                            
-                            read_index++;
-                            if (HAL_GetTick() - last_print >= 125) {
-                                int32_t x_mg = (int32_t)(d.x_g * 1000);
-                                int32_t y_mg = (int32_t)(d.y_g * 1000);
-                                int32_t z_mg = (int32_t)(d.z_g * 1000);
-                                printf("[AUTO] X:%ld.%03ld Y:%ld.%03ld Z:%ld.%03ld g | T:%.1fs\r\n",
-                                       x_mg/1000, (x_mg<0?-x_mg:x_mg)%1000,
-                                       y_mg/1000, (y_mg<0?-y_mg:y_mg)%1000,
-                                       z_mg/1000, (z_mg<0?-z_mg:z_mg)%1000,
-                                       (float)(HAL_GetTick() - rec_start)/1000.0f);
-                                last_print = HAL_GetTick();
-                            }
-                            HAL_Delay(10);
-                        }
-                    f_close(&fil);
-                    if (!earthquake_detected) {
-                        Queue_Append(filename);
-                        strncpy(last_recorded, filename, sizeof(last_recorded));
-                        last_recorded[sizeof(last_recorded) - 1] = '\0';
-                    }
-                }
-                state = AUTO_STATE_UPLOAD_PENDING;
-            } break;
-            case AUTO_STATE_UPLOAD_PENDING: {
-                HAL_StatusTypeDef st = HAL_ERROR;
-                char oldest[40];
-                uint8_t uploaded_pending = 0;
-
-                if (Queue_Peek(oldest, sizeof(oldest)) == 0) {
-                    int is_actual = (last_recorded[0] != 0 && strcmp(oldest, last_recorded) == 0);
-                    const char* tag = is_actual ? "[ACTUAL]" : "[PENDIENTE]";
-                    for (int attempt = 1; attempt <= 3; attempt++) {
-                        printf("[AUTO] Subiendo %s (intento %d/3) %s\r\n", tag, attempt, oldest);
-                        
-                        // Verificar interrupcion antes de iniciar
-                        if (g_event_pending) {
-                             printf("[AUTO] Interrupcion detectada antes de subida. Abortando.\r\n");
-                             st = HAL_BUSY;
-                             break;
-                        }
-
-                        uint8_t prev_abort = g_modem_abort_enabled;
-                        g_modem_abort_enabled = 1; // Permitir aborto
-                        st = Modem_UploadFile(oldest);
-                        g_modem_abort_enabled = prev_abort;
-                        
-                        if (st == HAL_OK) {
-                            char tmp[40];
-                            Queue_Pop(tmp, sizeof(tmp));
-                            Queue_RemoveFile(oldest);
-                            printf("[QUEUE] Removido de cola: %s\r\n", oldest);
-                            if (!is_actual) {
-                                uploaded_pending = 1;
-                            }
-                            break;
-                        } else if (g_event_pending) {
-                             // Si fallo por evento, salir del bucle de intentos
-                             break;
-                        }
-                        
-                        // Esperar un poco antes de reintentar si no fue evento
-                        HAL_Delay(2000);
-                    }
-                }
-                
-                if (g_event_pending) {
-                     printf("[AUTO] Salida de estado UPLOAD por evento pendiente.\r\n");
-                     state = AUTO_STATE_IDLE_LOW_POWER;
-                     // Salir del switch para procesar evento inmediatamente en siguiente iteracion
-                     break; 
-                }
-
-                if (st == HAL_OK && uploaded_pending) {
-                    // Verificar si hubo interrupcion durante la subida anterior
-                    if (g_event_pending) {
-                        printf("[AUTO] Interrupcion detectada durante subida. Abortando cola para adquirir.\r\n");
-                        state = AUTO_STATE_IDLE_LOW_POWER; // Volver a IDLE para procesar el evento
-                        break;
-                    }
-
-                    char next[40];
-                    if (Queue_Peek(next, sizeof(next)) == 0) {
-                        int is_actual_next = (last_recorded[0] != 0 && strcmp(next, last_recorded) == 0);
-                        const char* tag2 = is_actual_next ? "[ACTUAL]" : "[PENDIENTE]";
-                        printf("[AUTO] Subiendo %s %s\r\n", tag2, next);
-                        
-                        // NO LIMPIAR g_event_pending AQUI. Si ocurre evento, Modem_UploadFile deberia abortar o lo detectamos despues.
-                        uint8_t prev_abort2 = g_modem_abort_enabled;
-                        g_modem_abort_enabled = 1; // Habilitar aborto por interrupcion
-                        
-                        HAL_StatusTypeDef st2 = Modem_UploadFile(next);
-                        g_modem_abort_enabled = prev_abort2;
-                        
-                        if (st2 == HAL_OK) {
-                            char tmp2[40];
-                            Queue_Pop(tmp2, sizeof(tmp2));
-                            Queue_RemoveFile(next);
-                            printf("[QUEUE] Removido de cola: %s\r\n", next);
-                        } else if (g_event_pending) {
-                             printf("[AUTO] Subida abortada por evento.\r\n");
-                             state = AUTO_STATE_IDLE_LOW_POWER;
-                             break;
-                        }
-                        st = st2;
-                    }
-                }
-
-                ADXL355_Config_WakeOnMotion(trigger_g, act_count);
-                printf("[AUTO] Subida terminada (status=%ld), rearmando wake-on-motion\r\n", (long)st);
-                state = AUTO_STATE_IDLE_LOW_POWER;
-            } break;
-            case AUTO_STATE_CONFIG_CHECK: {
-                g_modem_abort_enabled = 1;
-                char cfg[MODEM_BUFFER_SIZE];
-                // Modem_DownloadConfig aplica la configuracion internamente via Apply_Remote_Config
-                if (Modem_DownloadConfig(cfg, sizeof(cfg)) == HAL_OK) {
-                    printf("[AUTO] Configuracion verificada y actualizada.\r\n");
-                }
-                last_cfg = HAL_GetTick();
-                state = AUTO_STATE_IDLE_LOW_POWER;
-            } break;
-        }
-    }
-}
-
-static void Run_Manual_Mode(void) {
-    ADXL355_Data_t data;
-    uint8_t rx_byte = 0;
-    uint8_t monitoring = 0;
-    uint8_t logging = 0;
-    char filename[20];
-    char buffer[256];
-    unsigned int bytes_written;
-    uint32_t start_tick;
-    uint32_t read_index = 0;
-    while (1)
-    {
-      // Check UART input (Non-blocking)
-      if (HAL_UART_Receive(&huart2, &rx_byte, 1, 0) == HAL_OK) {
-          switch(rx_byte) {
-              case 'm':
-                  monitoring = 1;
-                  printf("[SENSOR] Monitoring Started (Press 'q' to stop)\r\n");
-                  break;
-              case 'l':
-                  if (fres != FR_OK) {
-                      printf("[STORAGE] SD Card not mounted! Cannot log.\r\n");
-                      break;
-                  }
-                  // Find next filename
-                  for (int i = 1; i < 999; i++) {
-                      sprintf(filename, "DATA_%03d.CSV", i);
-                      if (f_open(&fil, filename, FA_READ) != FR_OK) {
-                          // File does not exist, use this one
-                          break;
-                      }
-                      f_close(&fil);
-                  }
-                  
-                  if (f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-                      printf("[STORAGE] Logging to %s (Press 'q' to stop)\r\n", filename);
-                      // Write Header
-                    sprintf(buffer, "timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n");
-                    f_write(&fil, buffer, strlen(buffer), &bytes_written);
-                      logging = 1;
-                      start_tick = HAL_GetTick();
-                      read_index = 0;
-                  } else {
-                      printf("[STORAGE] Failed to open file %s\r\n", filename);
-                  }
-                  break;
-              case 'q':
-              case 'x': // Keep x for compatibility
-                  if (monitoring) {
-                      monitoring = 0;
-                      printf("[SENSOR] Monitoring Stopped\r\n");
-                  }
-                  if (logging) {
-                      logging = 0;
-                      f_close(&fil);
-                      printf("[STORAGE] Logging Stopped. File saved: %s\r\n", filename);
-                      
-                      // Flush UART buffer before prompting
-                      while(HAL_UART_Receive(&huart2, &rx_byte, 1, 10) == HAL_OK);
-                      printf("\r\nSUBIR archivo a Google Drive? (s/n): ");
-                      uint8_t upload_choice = 0;
-                      while(1) {
-                          if (HAL_UART_Receive(&huart2, &upload_choice, 1, 100) == HAL_OK) {
-                              if (upload_choice == 's' || upload_choice == 'S') {
-                                  printf("Si\r\n");
-                                  uint8_t prev_abort = g_modem_abort_enabled;
-                                  uint8_t prev_event = g_event_pending;
-                                  g_modem_abort_enabled = 0;
-                                  g_event_pending = 0;
-                                  Modem_UploadFile(filename);
-                                  g_modem_abort_enabled = prev_abort;
-                                  g_event_pending = prev_event;
-                                  break;
-                              } else if (upload_choice == 'n' || upload_choice == 'N') {
-                                  printf("No\r\n");
-                                  break;
-                              }
-                          }
-                      }
-                  }
-                  Print_Menu();
-                  break;
-              case 'r':
-                  monitoring = 0; logging = 0;
-                  printf("\r\nSelect Range (Current: %s):\r\n1: +/- 2g\r\n2: +/- 4g\r\n3: +/- 8g\r\n", range_str[cur_range_idx]);
-                  HAL_UART_Receive(&huart2, &rx_byte, 1, HAL_MAX_DELAY); // Wait for input
-                  if(rx_byte == '1') { ADXL355_Set_Range(ADXL355_RANGE_2G); cur_range_idx = 0; printf("Range set to 2g\r\n"); }
-                  else if(rx_byte == '2') { ADXL355_Set_Range(ADXL355_RANGE_4G); cur_range_idx = 1; printf("Range set to 4g\r\n"); }
-                  else if(rx_byte == '3') { ADXL355_Set_Range(ADXL355_RANGE_8G); cur_range_idx = 2; printf("Range set to 8g\r\n"); }
-                  else printf("Invalid Range\r\n");
-                  Print_Menu();
-                  break;
-              case 'o':
-                  monitoring = 0; logging = 0;
-                  printf("\r\nSelect ODR (Current: %s):\r\n1: 4000Hz\r\n2: 2000Hz\r\n3: 1000Hz\r\n4: 500Hz\r\n5: 250Hz\r\n6: 125Hz\r\n7: 62.5Hz\r\n8: 31.25Hz\r\n", odr_str[cur_odr_idx]);
-                  HAL_UART_Receive(&huart2, &rx_byte, 1, HAL_MAX_DELAY); // Wait for input
-                  switch(rx_byte) {
-                      case '1': ADXL355_Set_ODR(ADXL355_ODR_4000HZ); cur_odr_idx = 1; printf("ODR set to 4000Hz\r\n"); break;
-                      case '2': ADXL355_Set_ODR(ADXL355_ODR_2000HZ); cur_odr_idx = 2; printf("ODR set to 2000Hz\r\n"); break;
-                      case '3': ADXL355_Set_ODR(ADXL355_ODR_1000HZ); cur_odr_idx = 3; printf("ODR set to 1000Hz\r\n"); break;
-                      case '4': ADXL355_Set_ODR(ADXL355_ODR_500HZ);  cur_odr_idx = 4; printf("ODR set to 500Hz\r\n");  break;
-                      case '5': ADXL355_Set_ODR(ADXL355_ODR_250HZ);  cur_odr_idx = 5; printf("ODR set to 250Hz\r\n");  break;
-                      case '6': ADXL355_Set_ODR(ADXL355_ODR_125HZ);  cur_odr_idx = 6; printf("ODR set to 125Hz\r\n");  break;
-                      case '7': ADXL355_Set_ODR(ADXL355_ODR_62_5HZ); cur_odr_idx = 7; printf("ODR set to 62.5Hz\r\n"); break;
-                      case '8': ADXL355_Set_ODR(ADXL355_ODR_31_25HZ); cur_odr_idx = 8; printf("ODR set to 31.25Hz\r\n"); break;
-                      default: printf("Invalid ODR\r\n"); break;
-                  }
-                  Print_Menu();
-                  break;
-              case 't': {
-                  monitoring = 0; logging = 0;
-                  printf("\r\n--- Set Trigger Threshold ---\r\n");
-                  printf("Current: %.2f G\r\n", trigger_g);
-                  printf("Enter new value [e.g. 0.5] (q to cancel, Enter to save): ");
-                  
-                  char t_buf[10];
-                  int t_idx = 0;
-                  uint8_t exit_case = 0;
-                  
-                  // Flush UART buffer to remove any leftover characters (like \r or \n)
-                  while(HAL_UART_Receive(&huart2, &rx_byte, 1, 10) == HAL_OK);
-                  
-                  while(1) {
-                      if(HAL_UART_Receive(&huart2, &rx_byte, 1, 100) == HAL_OK) {
-                          if(rx_byte == 'q' || rx_byte == 'Q') {
-                              printf("\r\nCancelled.\r\n");
-                              exit_case = 1;
-                              break;
-                          }
-                          if(rx_byte == '\r' || rx_byte == '\n') {
-                              if (t_idx > 0) break; // Save if something was typed
-                              else { // Just Enter without value
-                                  printf("\r\nCancelled (No value entered).\r\n");
-                                  exit_case = 1;
-                                  break;
-                              }
-                          }
-                          // Handle Backspace (ASCII 8 or 127)
-                          if(rx_byte == 8 || rx_byte == 127) {
-                              if(t_idx > 0) {
-                                  t_idx--;
-                                  printf("\b \b"); // Move back, print space, move back again
-                              }
-                              continue;
-                          }
-                          // Only allow numbers and decimal point
-                          if((rx_byte >= '0' && rx_byte <= '9') || rx_byte == '.') {
-                              if(t_idx < 9) {
-                                  t_buf[t_idx++] = rx_byte;
-                                  HAL_UART_Transmit(&huart2, &rx_byte, 1, 100); // Echo
-                              }
-                          } else {
-                              // Ignore other characters without printing error to keep it clean
-                          }
-                      }
-                  }
-                  
-                  if (!exit_case && t_idx > 0) {
-                      t_buf[t_idx] = 0;
-                      float new_trigger = atof(t_buf);
-                      if (new_trigger > 0.0f) {
-                          trigger_g = new_trigger;
-                          printf("\r\nSUCCESS: Trigger set to %.2f G\r\n", trigger_g);
-                      } else {
-                          printf("\r\nERROR: Invalid numeric value.\r\n");
-                      }
-                  }
-                  
-                  // Final menu display to ensure we know where we are
-                  Print_Menu();
-                  break;
-              }
-
-              case 'i': {
-                  monitoring = 0; logging = 0;
-                  if (fres != FR_OK) { printf("SD Not Mounted!\r\n"); break; }
-                  printf("\r\nARMING INTERRUPT MODE (Threshold: %.2f G, Count: %d)...\r\n", trigger_g, act_count);
-                  ADXL355_Config_WakeOnMotion(trigger_g, act_count);
-                  printf("ARMED. Waiting for motion... (Press 'q' to abort)\r\n");
-                  Print_Power_State(PWR_STATE_LOW_POWER_WAITING);
-                  
-                  uint8_t waiting = 1;
-                  uint32_t last_display_tick = 0;
-                  while(waiting) {
-                      // Show current values while waiting for motion
-                      if (HAL_GetTick() - last_display_tick > 150) {
-                          ADXL355_Read_Data(&data);
-                          int32_t x_mg = (int32_t)(data.x_g * 1000);
-                          int32_t y_mg = (int32_t)(data.y_g * 1000);
-                          int32_t z_mg = (int32_t)(data.z_g * 1000);
-                          printf("\rWait... X: %ld.%03ld | Y: %ld.%03ld | Z: %ld.%03ld g  ", 
-                                 x_mg/1000, (x_mg<0?-x_mg:x_mg)%1000, 
-                                 y_mg/1000, (y_mg<0?-y_mg:y_mg)%1000, 
-                                 z_mg/1000, (z_mg<0?-z_mg:z_mg)%1000);
-                          last_display_tick = HAL_GetTick();
-                      }
-
-                      // Check INT1 (Active High)
-                      if(HAL_GPIO_ReadPin(ADXL_INT1_GPIO_Port, ADXL_INT1_Pin) == GPIO_PIN_SET) {
-                          Print_Power_State(PWR_STATE_ACTIVE_RECORDING);
-                          printf("MOTION DETECTED! Recording...\r\n");
-                          
-                          // Find filename for trigger log
-                          for (int i = 1; i < 999; i++) {
-                              sprintf(filename, "TRIG_%03d.CSV", i);
-                              if (f_open(&fil, filename, FA_READ) != FR_OK) break;
-                              f_close(&fil);
-                          }
-                          
-                          if (f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
-                                printf("Logging to %s\r\n", filename);
-                                // Header with semi-colon
-                                sprintf(buffer, "timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n");
-                                f_write(&fil, buffer, strlen(buffer), &bytes_written);
-                              
-                              start_tick = HAL_GetTick();
-                              read_index = 0;
-                              uint32_t rec_start = HAL_GetTick();
-                              uint8_t earthquake_detected = 0;
-                              
-                              // Settling logic variables
-                              uint32_t settling_start = 0;
-                              uint8_t in_settling = 0;
-                              float prev_mag = -1.0f;
-                              const float static_delta = 0.005f; // 5mg stability threshold
-                              const uint32_t settling_duration = 3000; // 3 seconds of stability required
-                              
-                              // Record for up to 60 seconds or until settled/aborted
-                              while((HAL_GetTick() - rec_start) < 60000) {
-                                  ADXL355_Read_Data(&data);
-                                  
-                                  // 1. Calculate Magnitude (XY only, Z is ignored due to 1G gravity)
-                                  float current_mag = sqrtf(data.x_g * data.x_g + data.y_g * data.y_g);
-                                  
-                                  // 2. Auto-stop logic: check if event has finished
-                                  if (current_mag < trigger_g) {
-                                      if (!in_settling) {
-                                          in_settling = 1;
-                                          settling_start = HAL_GetTick();
-                                          printf("\r\nSETTLING: Starting settling counter (3000 ms)...\r\n");
-                                      }
-                                      
-                                      // Check if "static" (change between samples is very low)
-                                      float delta = (prev_mag < 0) ? 0 : fabsf(current_mag - prev_mag);
-                                      if (delta > static_delta) {
-                                          // Still moving significantly, reset settling timer
-                                          if ((HAL_GetTick() - settling_start) > 500) { // Avoid spamming if very close to delta
-                                              printf("Moving... resetting settling time.\r\n");
-                                          }
-                                          settling_start = HAL_GetTick();
-                                      }
-                                      
-                                      // If stable for the required duration, stop recording
-                                      if ((HAL_GetTick() - settling_start) > settling_duration) {
-                                          printf("\r\nEVENT FINISHED: System settled.\r\n");
-                                          break;
-                                      }
-                                  } else {
-                                      // Back above threshold, event is still active
-                                      if (in_settling) {
-                                          printf("\r\nNEW EVENT DETECTED: Interrupting settling, continuing log...\r\n");
-                                      }
-                                      in_settling = 0;
-                                  }
-                                  prev_mag = current_mag;
-                                  
-                                  // Earthquake Rejection Logic (Abort if > 2.0g)
-                                  if ((data.x_g > 2.0f || data.x_g < -2.0f) || 
-                                      (data.y_g > 2.0f || data.y_g < -2.0f) || 
-                                      (data.z_g > 2.0f || data.z_g < -2.0f)) {
-                                      printf("\r\nEARTHQUAKE/SHOCK DETECTED (>2.0G)! Aborting...\r\n");
-                                      earthquake_detected = 1;
-                                      break;
-                                  }
-                                  
-                                  (void)ADXL355_Get_FIFO_Entries();
-                                  uint32_t current_tick = HAL_GetTick();
-                                  uint32_t elapsed_ms = current_tick - start_tick;
-                                  
-                                  uint32_t base_sec = 1767817653; 
-                                  uint32_t rel_sec = elapsed_ms / 1000;
-                                  uint32_t rel_us = (elapsed_ms % 1000) * 1000;
-                                  
-                                  int32_t x_ug = (int32_t)(data.x_g * 1000000);
-                                  int32_t y_ug = (int32_t)(data.y_g * 1000000);
-                                  int32_t z_ug = (int32_t)(data.z_g * 1000000);
-                    
-                                  sprintf(buffer, "%lu.%06lu;%lu.%06lu;%lu.%06lu;%ld.%06ld;%ld.%06ld;%ld.%06ld;%.2f;%.2f;%.2f\r\n", 
-                                         rel_sec, rel_us, base_sec + rel_sec, rel_us, base_sec + rel_sec, rel_us,
-                                         x_ug/1000000, (x_ug<0?-x_ug:x_ug)%1000000,
-                                         y_ug/1000000, (y_ug<0?-y_ug:y_ug)%1000000,
-                                         z_ug/1000000, (z_ug<0?-z_ug:z_ug)%1000000,
-                                         voltage_val, current_val, power_val);
-                                  
-                                  f_write(&fil, buffer, strlen(buffer), &bytes_written);
-                                  read_index++; // Increment read_index for internal tracking
-                                  
-                                  if(HAL_UART_Receive(&huart2, &rx_byte, 1, 0) == HAL_OK && rx_byte == 'q') break;
-                              }
-                              f_close(&fil);
-                              
-                              if(earthquake_detected) {
-                                  // Optional: Delete the file if earthquake
-                                  // f_unlink(filename); 
-                                  printf("Log file kept but marked as potentially invalid (Shock).\r\n");
-                              } else {
-                                  printf("Recording Finished.\r\n");
-                                  
-                                  // Preguntar por subida a Drive
-                                  printf("\r\nSUBIR archivo a Google Drive? (s/n): ");
-                                  uint8_t upload_choice_i = 0;
-                                  while(1) {//
-                                      if (HAL_UART_Receive(&huart2, &upload_choice_i, 1, 100) == HAL_OK) {
-                                          if (upload_choice_i == 's' || upload_choice_i == 'S') {
-                                              printf("Si\r\n");
-                                              uint8_t prev_abort_i = g_modem_abort_enabled;
-                                              uint8_t prev_event_i = g_event_pending;
-                                              g_modem_abort_enabled = 0;
-                                              g_event_pending = 0;
-                                              Modem_UploadFile(filename);
-                                              g_modem_abort_enabled = prev_abort_i;
-                                              g_event_pending = prev_event_i;
-                                              break;
-                                          } else if (upload_choice_i == 'n' || upload_choice_i == 'N') {
-                                              printf("No\r\n");
-                                              break;
-                                          }
-                                      }
-                                  }
-                              }
-                          } else {
-                              printf("Failed to open file %s\r\n", filename);
-                          }
-                          waiting = 0;
-                      }
-                      
-                      if(HAL_UART_Receive(&huart2, &rx_byte, 1, 0) == HAL_OK && (rx_byte == 'q' || rx_byte == 'Q')) {
-                          printf("Aborted.\r\n");
-                          waiting = 0;
-                      }
-                  }
-                  
-                  // Restore Settings
-                  ADXL355_Write_Reg(ADXL355_ACT_EN, 0x00);
-                  // Restore Range (Index 0 -> 2G (0x01), etc.)
-                  ADXL355_Set_Range((ADXL355_Range_t)(cur_range_idx + 1));
-                  // Restore ODR
-                  if(cur_odr_idx > 0) ADXL355_Set_ODR((ADXL355_ODR_t)(cur_odr_idx - 1));
-                  
-                  printf("System Restored.\r\n");
-                  Print_Menu();
-                  break;
-              }
-          }
-      }
-
-      if (monitoring) {
-          ADXL355_Read_Data(&data);
-          // Print as integer * 1000 to avoid float printf issues
-          int32_t x_mg = (int32_t)(data.x_g * 1000);
-          int32_t y_mg = (int32_t)(data.y_g * 1000);
-          int32_t z_mg = (int32_t)(data.z_g * 1000);
-          
-          printf("X: %ld.%03ld g | Y: %ld.%03ld g | Z: %ld.%03ld g\r\n", 
-                 x_mg/1000, (x_mg<0?-x_mg:x_mg)%1000, 
-                 y_mg/1000, (y_mg<0?-y_mg:y_mg)%1000, 
-                 z_mg/1000, (z_mg<0?-z_mg:z_mg)%1000);
-                 
-          HAL_Delay(100); // 10Hz Update for display
-      }
-
-      if (logging) {
-          ADXL355_Read_Data(&data);
-          (void)ADXL355_Get_FIFO_Entries();
-          uint32_t current_tick = HAL_GetTick();
-          uint32_t elapsed_ms = current_tick - start_tick;
-          uint32_t base_sec = 1767817653; 
-          uint32_t rel_sec = elapsed_ms / 1000;
-          uint32_t rel_us = (elapsed_ms % 1000) * 1000;
-          int32_t x_ug = (int32_t)(data.x_g * 1000000);
-          int32_t y_ug = (int32_t)(data.y_g * 1000000);
-          int32_t z_ug = (int32_t)(data.z_g * 1000000);
-          sprintf(buffer, "%lu.%06lu;%lu.%06lu;%lu.%06lu;%ld.%06ld;%ld.%06ld;%ld.%06ld;%.2f;%.2f;%.2f\r\n", 
-                 rel_sec, rel_us,
-                 base_sec + rel_sec, rel_us,
-                 base_sec + rel_sec, rel_us,
-                 x_ug/1000000, (x_ug<0?-x_ug:x_ug)%1000000,
-                 y_ug/1000000, (y_ug<0?-y_ug:y_ug)%1000000,
-                 z_ug/1000000, (z_ug<0?-z_ug:z_ug)%1000000,
-                 voltage_val, current_val, power_val);
-          f_write(&fil, buffer, strlen(buffer), &bytes_written);
-          read_index++;
-      }
-    }
-}
 /* USER CODE END 0 */
 
 /**
@@ -1018,7 +182,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   Modem_Init(&huart1);
   printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
-  Modem_PowerOn();
+
   if (ADXL355_Init(&hspi2)) {
       printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
       ADXL355_LevelToZero();
@@ -1031,35 +195,30 @@ int main(void)
   } else {
       fres = FR_NOT_READY;
   }
-  char config_buffer[MODEM_BUFFER_SIZE];
-  // Modem_DownloadConfig aplica la configuracion internamente, incluyendo OPERATION_MODE
-  if (Modem_DownloadConfig(config_buffer, sizeof(config_buffer)) == HAL_OK) {
-      printf("[CONFIG] Remote configuration downloaded and applied.\r\n");
-      printf("[CONFIG] Buffer recibido (inicio):\r\n%s\r\n", config_buffer);
-      printf("[CONFIG] OPERATION_MODE effective=%d\r\n", operation_mode);
-  } else {
-      printf("[CONFIG] Remote configuration not applied (Error or Timeout).\r\n");
-  }
-  g_modem_abort_enabled = 1;
-  if (operation_mode == 2) {
-      Run_Auto_Mode();
-  } else {
-      Print_Menu();
-      Run_Manual_Mode();
-  }
+
+  /* RTOS takes over from here -- tasks handle acquisition, upload, and CLI */
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+  uart_mutexHandle = osMutexNew(NULL);
+  MX_FREERTOS_Init();
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
   }
-  /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
-  /* USER CODE BEGIN 3 */
-  }
+    /* USER CODE BEGIN 3 */
   /* USER CODE END 3 */
-
+}
 
 /**
   * @brief System Clock Configuration
@@ -1102,233 +261,18 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
-  * @brief SPI2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI2_Init(void)
-{
-
-  /* USER CODE BEGIN SPI2_Init 0 */
-
-  /* USER CODE END SPI2_Init 0 */
-
-  /* USER CODE BEGIN SPI2_Init 1 */
-
-  /* USER CODE END SPI2_Init 1 */
-  /* SPI2 parameter configuration*/
-  hspi2.Instance = SPI2;
-  hspi2.Init.Mode = SPI_MODE_MASTER;
-  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI2_Init 2 */
-
-  /* USER CODE END SPI2_Init 2 */
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, HAT_PWR_OFF_Pin|MODEM_PWRKEY_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_SET);
-
-  /*Configure GPIO pin : ADXK_DRDY_Pin */
-  GPIO_InitStruct.Pin = ADXK_DRDY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ADXK_DRDY_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : ADXL_CS_Pin */
-  GPIO_InitStruct.Pin = ADXL_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  HAL_GPIO_Init(ADXL_CS_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : HAT_PWR_OFF_Pin MODEM_PWRKEY_Pin */
-  GPIO_InitStruct.Pin = HAT_PWR_OFF_Pin|MODEM_PWRKEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : MODEM_RI_Pin */
-  GPIO_InitStruct.Pin = MODEM_RI_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(MODEM_RI_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : ADXL_INT1_Pin */
-  GPIO_InitStruct.Pin = ADXL_INT1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  HAL_GPIO_Init(ADXL_INT1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : SD_CS_Pin */
-  GPIO_InitStruct.Pin = SD_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  HAL_GPIO_Init(SD_CS_GPIO_Port, &GPIO_InitStruct);
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
-}
-
 /* USER CODE BEGIN 4 */
-// Redirect printf to UART
+// Redirect printf to UART (mutex-protected for multi-task safety)
 int _write(int file, char *ptr, int len)
 {
-  // Usar timeout de 0 o muy bajo para evitar bloqueo si no hay receptor
-  // Si el PC no está conectado, el buffer interno del UART se llenará y
-  // HAL_UART_Transmit podría bloquearse esperando que se vacíe si el timeout es alto.
-  // Con timeout pequeño, se perderán caracteres pero el sistema seguirá corriendo.
-  HAL_StatusTypeDef status = HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 10);
+  if (uart_mutexHandle != NULL) {
+    osMutexAcquire(uart_mutexHandle, osWaitForever);
+  }
+  HAL_StatusTypeDef status = HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, 100);
+  if (uart_mutexHandle != NULL) {
+    osMutexRelease(uart_mutexHandle);
+  }
   if (status != HAL_OK) {
-      // Opcional: Manejar error, pero lo importante es no bloquear
   }
   return len;
 }
@@ -1336,10 +280,32 @@ int _write(int file, char *ptr, int len)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == ADXL_INT1_Pin) {
-    g_event_pending = 1;
+    osEventFlagsSet(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
   }
 }
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

@@ -1,4 +1,4 @@
-# AWTAS_DEFINITIVE
+# HERMES-A1-CMSIS
 
 Sistema autónomo de adquisición triaxial (AWTAS) sobre STM32F446RE. Integra sensado con ADXL355, registro en SD (CSV) y subida de archivos a Google Drive mediante un backend HTTP accesible por túnel Cloudflare usando un módem Quectel EC25.
 

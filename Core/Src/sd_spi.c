@@ -22,10 +22,21 @@ extern SPI_HandleTypeDef hspi1;
  ***************************************************************/
 
 // FATFS Variables
-static FATFS fs;
-static FIL fil;
+FATFS fs;
+FIL fil;
 static char sd_path[4] = "0:/";
 static uint8_t sd_card_type = SD_TYPE_UNKNOWN;
+
+static const char* sd_card_type_str(uint8_t t) {
+    switch (t) {
+        case SD_TYPE_UNKNOWN: return "UNKNOWN";
+        case SD_TYPE_V1:      return "SDv1";
+        case SD_TYPE_V2:      return "SDv2 (non-HC)";
+        case SD_TYPE_V2HC:    return "SDv2 HC/SDXC";
+        case SD_TYPE_MMC:     return "MMC";
+        default:              return "???";
+    }
+}
 
 // SPI Transfer Functions
 static uint8_t spi_send(uint8_t data)
@@ -88,45 +99,47 @@ uint8_t sd_init(void)
 {
     uint8_t res, retry = 0;
 
-    printf("[STORAGE] sd_init starting...\r\n");
-    HAL_Delay(150); // Give SD card more time to stabilize
+    printf("[STORAGE] === SD INIT START ===\r\n");
+    printf("[STORAGE] Step 1/7: Stabilizing SD card (150ms delay)...\r\n");
+    HAL_Delay(150);
 
     // Slow down SPI for initialization (< 400kHz)
-    // STM32F446 SPI1 is on APB2 (90MHz max). 90/256 = 351kHz.
+    printf("[STORAGE] Step 2/7: SPI clock = 351 kHz (prescaler 256)\r\n");
     SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        printf("[STORAGE] HAL_SPI_Init failed\r\n");
+        printf("[STORAGE] [FAIL] HAL_SPI_Init (slow) failed\r\n");
         return 1;
     }
+    printf("[STORAGE] [OK] SPI re-initialized at 351 kHz\r\n");
 
+    printf("[STORAGE] Sending 80 dummy clocks (CS high) to enter SPI mode...\r\n");
     SD_CS_HIGH();
-    // Send 100+ dummy clocks with CS high to enter SPI mode
     for(int i=0; i<20; i++) {
         spi_send(0xFF);
     }
 
     // CMD0: GO_IDLE_STATE
+    printf("[STORAGE] Step 3/7: Sending CMD0 (GO_IDLE_STATE)...\r\n");
     retry = 0;
     do {
         SD_CS_HIGH();
-        spi_send(0xFF); // Sync clocks
+        spi_send(0xFF);
         
         SD_CS_LOW();
         res = sd_send_cmd(CMD0, 0);
-        SD_CS_HIGH(); // Must toggle CS for CMD0 retries on some cards
+        SD_CS_HIGH();
         
         if (res == 0x01) {
             break;
         }
         
         spi_send(0xFF);
-        HAL_Delay(10); // Short delay
+        HAL_Delay(10);
         retry++;
     } while (retry < 100);
 
     if (res != 0x01) {
-        // Try one more sequence with more sync clocks
-        printf("[STORAGE] CMD0 retry sequence...\r\n");
+        printf("[STORAGE] [RETRY] CMD0 failed after %d tries, retry sequence with 100 sync clocks...\r\n", retry);
         SD_CS_HIGH();
         for(int i=0; i<100; i++) spi_send(0xFF);
         
@@ -142,27 +155,28 @@ uint8_t sd_init(void)
     }
 
     if (res != 0x01) {
-        printf("[STORAGE] SD Init Failed: CMD0 (Res=0x%02X after %d retries)\r\n", res, retry);
+        printf("[STORAGE] [FAIL] CMD0 failed (Res=0x%02X after %d retries)\r\n", res, retry);
         SD_CS_HIGH();
         return 1;
     }
 
-    printf("[STORAGE] CMD0 Success (0x%02X) at retry %d\r\n", res, retry);
+    printf("[STORAGE] [OK] CMD0 (GO_IDLE_STATE) => response 0x%02X after %d retries\r\n", res, retry);
 
-    // CMD8: SEND_IF_COND (Required for SDHC/SDXC)
+    // CMD8: SEND_IF_COND
+    printf("[STORAGE] Step 4/7: Sending CMD8 (SEND_IF_COND, 0x1AA)...\r\n");
     SD_CS_LOW();
     res = sd_send_cmd(CMD8, 0x1AA);
     if (res == 0x01) {
-        // V2.0 Card
         uint8_t ocr[4];
         for (int i = 0; i < 4; i++) ocr[i] = spi_send(0xFF);
         SD_CS_HIGH();
         spi_send(0xFF);
 
-        printf("[STORAGE] V2.0 Card detected, OCR: %02X %02X %02X %02X\r\n", ocr[0], ocr[1], ocr[2], ocr[3]);
+        printf("[STORAGE] [INFO] V2.0 card, OCR echo: %02X %02X %02X %02X\r\n", ocr[0], ocr[1], ocr[2], ocr[3]);
 
         if (ocr[2] == 0x01 && ocr[3] == 0xAA) {
-            // Valid V2.0 card
+            printf("[STORAGE] [INFO] Voltage range 2.7-3.6V, check pattern 0xAA => Valid SDv2\r\n");
+            printf("[STORAGE] Step 5/7: Sending ACMD41 with HCS bit (waiting up to 255 tries)...\r\n");
             retry = 0;
             do {
                 SD_CS_LOW();
@@ -179,22 +193,31 @@ uint8_t sd_init(void)
                 HAL_Delay(10);
             } while (res != 0x00 && retry < 255);
 
+            printf("[STORAGE] [INFO] ACMD41 completed after %d tries (res=0x%02X)\r\n", retry, res);
+
             if (res == 0x00) {
-                // Check CCS (Capacity Status) in OCR
+                printf("[STORAGE] Step 6/7: Reading OCR (CMD58) to check CCS bit...\r\n");
                 SD_CS_LOW();
                 if (sd_send_cmd(CMD58, 0) == 0x00) {
                     for (int i = 0; i < 4; i++) ocr[i] = spi_send(0xFF);
                     sd_card_type = (ocr[0] & 0x40) ? SD_TYPE_V2HC : SD_TYPE_V2;
+                    printf("[STORAGE] [INFO] OCR = %02X %02X %02X %02X, CCS bit = %d => %s\r\n",
+                           ocr[0], ocr[1], ocr[2], ocr[3],
+                           (ocr[0] & 0x40) ? 1 : 0,
+                           sd_card_type_str(sd_card_type));
                 }
                 SD_CS_HIGH();
                 spi_send(0xFF);
             }
+        } else {
+            printf("[STORAGE] [WARN] CMD8 pattern mismatch, retrying as V1 card\r\n");
+            goto v1_init;
         }
     } else {
         SD_CS_HIGH();
         spi_send(0xFF);
-        // V1.x Card or MMC
-        printf("[STORAGE] V1.x/MMC Card detected\r\n");
+        v1_init:
+        printf("[STORAGE] Step 4b/7: V1.x/MMC Card path\r\n");
         retry = 0;
         do {
             SD_CS_LOW();
@@ -209,6 +232,7 @@ uint8_t sd_init(void)
 
             if (res == 0x00) {
                 sd_card_type = SD_TYPE_V1;
+                printf("[STORAGE] [OK] ACMD41 accepted => SDv1\r\n");
                 break;
             }
 
@@ -219,6 +243,7 @@ uint8_t sd_init(void)
 
             if (res == 0x00) {
                 sd_card_type = SD_TYPE_MMC;
+                printf("[STORAGE] [OK] CMD1 accepted => MMC\r\n");
                 break;
             }
             retry++;
@@ -227,27 +252,28 @@ uint8_t sd_init(void)
     }
 
     if (sd_card_type == SD_TYPE_UNKNOWN) {
-        printf("[STORAGE] SD Init Failed: Unknown card type (Res=0x%02X)\r\n", res);
+        printf("[STORAGE] [FAIL] Unknown card type (res=0x%02X after %d retries)\r\n", res, retry);
         SD_CS_HIGH();
         return 1;
     }
 
     // Set block size to 512 bytes (for non-SDHC cards)
     if (sd_card_type != SD_TYPE_V2HC) {
+        printf("[STORAGE] [INFO] SDHC not detected, setting block size to 512 via CMD16\r\n");
         sd_send_cmd(CMD16, 512);
     }
 
     SD_CS_HIGH();
     spi_send(0xFF);
 
-    printf("[STORAGE] SD Card Initialized. Type: %d\r\n", sd_card_type);
-
-    // Speed up SPI for data transfer
-    // 90MHz / 8 = 11.25MHz (safe for most SD cards)
+    printf("[STORAGE] Step 7/7: Speed up SPI for data transfer (11.25 MHz)...\r\n");
     SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8; 
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        printf("[STORAGE] Final SPI Init failed\r\n");
+        printf("[STORAGE] [FAIL] Final SPI init at 11.25 MHz failed\r\n");
+    } else {
+        printf("[STORAGE] [OK] SPI running at 11.25 MHz\r\n");
     }
+    printf("[STORAGE] === SD INIT DONE: card_type=%s ===\r\n", sd_card_type_str(sd_card_type));
 
     return 0;
 }
@@ -437,46 +463,75 @@ int sd_mount(void)
 {
     FRESULT res;
 
-    printf("[STORAGE] Calling sd_init...\r\n");
+    printf("[STORAGE] === MOUNT START ===\r\n");
+    printf("[STORAGE] Phase 1/4: SD hardware init...\r\n");
     if (sd_init() != 0) {
-        printf("[STORAGE] SD Card Init Failed\r\n");
+        printf("[STORAGE] [FAIL] SD hardware init failed\r\n");
         return -1;
     }
+    printf("[STORAGE] [OK] SD hardware init complete\r\n");
 
-    printf("[STORAGE] SD Init OK, linking driver...\r\n");
-
-    // Link the SD driver to FATFS
+    printf("[STORAGE] Phase 2/4: Linking FatFs disk driver...\r\n");
     extern const Diskio_drvTypeDef USER_Driver;
     if (FATFS_LinkDriver(&USER_Driver, sd_path) != 0)
     {
-        printf("[STORAGE] Failed to link SD driver\r\n");
+        printf("[STORAGE] [FAIL] FATFS_LinkDriver failed\r\n");
         return -1;
     }
+    printf("[STORAGE] [OK] Driver linked at path '%s'\r\n", sd_path);
 
-    printf("[STORAGE] Driver linked, calling f_mount...\r\n");
-
+    printf("[STORAGE] Phase 3/4: Mounting filesystem (f_mount)...\r\n");
     res = f_mount(&fs, sd_path, 1);
 
     if (res != FR_OK) {
-        printf("[STORAGE] Mount failed (%d), trying to format...\r\n", res);
+        printf("[STORAGE] [WARN] f_mount returned FRESULT=%d\r\n", res);
+        printf("[STORAGE]        => %s\r\n",
+               res == FR_NO_FILESYSTEM ? "NO FILESYSTEM (needs format)" :
+               res == FR_NOT_READY     ? "NOT READY (card removed?)" :
+               res == FR_DISK_ERR      ? "DISK ERROR (hardware issue)" :
+               res == FR_INT_ERR       ? "INTERNAL ERROR" :
+               res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
+                                         "UNKNOWN ERROR");
 
-        // Try to format the card
+        printf("[STORAGE] Phase 3b: Attempting auto-format (f_mkfs)...\r\n");
+        printf("[STORAGE] [INFO] Work buffer = 4096 bytes (stack-allocated)\r\n");
+
         BYTE work[4096];
         res = f_mkfs(sd_path, FM_FAT32, 0, work, sizeof(work));
 
         if (res == FR_OK) {
-            printf("[STORAGE] Card formatted, mounting again...\r\n");
+            printf("[STORAGE] [OK] Format successful! Remounting...\r\n");
             res = f_mount(&fs, sd_path, 1);
+        } else {
+            printf("[STORAGE] [FAIL] Format returned FRESULT=%d\r\n", res);
+            printf("[STORAGE]        => %s\r\n",
+                   res == FR_NOT_READY     ? "NOT READY" :
+                   res == FR_DISK_ERR      ? "DISK ERROR" :
+                   res == FR_MKFS_ABORTED  ? "MKFS ABORTED (wrong param)" :
+                   res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
+                                             "UNKNOWN ERROR");
         }
     }
 
     if (res != FR_OK) {
-        printf("[STORAGE] Mount Failed: %d\r\n", res);
+        printf("[STORAGE] [FAIL] Mount failed after all attempts\r\n");
         FATFS_UnLinkDriver(sd_path);
         return -1;
     }
 
-    printf("[STORAGE] SD Card Mounted\r\n");
+    printf("[STORAGE] [OK] Filesystem mounted successfully\r\n");
+
+    // Show volume info
+    FATFS* ptfs;
+    DWORD fre_clust, fre_sect, tot_sect;
+    if (f_getfree(sd_path, &fre_clust, &ptfs) == FR_OK) {
+        tot_sect = (ptfs->n_fatent - 2) * ptfs->csize;
+        fre_sect = fre_clust * ptfs->csize;
+        printf("[STORAGE] [INFO] Total: ~%lu MB, Free: ~%lu MB\r\n",
+               (unsigned long)(tot_sect / 2048),
+               (unsigned long)(fre_sect / 2048));
+    }
+    printf("[STORAGE] === MOUNT DONE ===\r\n");
     return 0;
 }
 
@@ -490,35 +545,35 @@ void sd_unmount(void)
 // Write/Create File
 int sd_write_file(const char *filename, const char *data)
 {
-    printf("[STORAGE] Trying to open file: %s\r\n", filename);
-    printf("[STORAGE] FATFS mounted at: %s\r\n", sd_path);
+    UINT bw;
+    printf("[STORAGE] === FILE WRITE: \"%s\" ===\r\n", filename);
+    printf("[STORAGE] [INFO] Data size = %zu bytes\r\n", strlen(data));
 
     FRESULT res = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
 
-    printf("[STORAGE] f_open returned: %d\r\n", res);
-
     if (res != FR_OK) {
-        printf("[STORAGE] Open Failed: %d\r\n", res);
-
-        // Try with full path
+        printf("[STORAGE] [WARN] f_open('%s') = %d, trying full path \"%swater_log.csv\"...\r\n", filename, res, sd_path);
         char fullpath[50];
         sprintf(fullpath, "%swater_log.csv", sd_path);
-        printf("[STORAGE] Trying full path: %s\r\n", fullpath);
         res = f_open(&fil, fullpath, FA_CREATE_ALWAYS | FA_WRITE);
-        printf("[STORAGE] f_open with full path returned: %d\r\n", res);
-
-        if (res != FR_OK)
+        printf("[STORAGE] [INFO] f_open full path => %d\r\n", res);
+        if (res != FR_OK) {
+            printf("[STORAGE] [FAIL] Could not open any path for writing\r\n");
             return -1;
+        }
     }
 
-    UINT bw;
     res = f_write(&fil, data, strlen(data), &bw);
+    printf("[STORAGE] [INFO] f_write => %d, bytes_written=%u\r\n", res, bw);
+
     f_close(&fil);
+    printf("[STORAGE] [INFO] f_close done\r\n");
 
     if (res == FR_OK) {
-        printf("[STORAGE] Written %u bytes to %s\r\n", bw, filename);
+        printf("[STORAGE] [OK] Wrote %u bytes to '%s'\r\n", bw, filename);
         return 0;
     }
+    printf("[STORAGE] [FAIL] Write failed\r\n");
     return -1;
 }
 
@@ -541,17 +596,24 @@ int sd_read_file(const char *filename, char *buffer, uint32_t size, UINT *bytes_
 // Append to File
 int sd_append_file(const char *filename, const char *data)
 {
+    printf("[STORAGE] === FILE APPEND: \"%s\" (%zu bytes) ===\r\n", filename, strlen(data));
     FRESULT res = f_open(&fil, filename, FA_OPEN_APPEND | FA_WRITE);
     if (res != FR_OK) {
-        printf("[STORAGE] Append Failed: %d\r\n", res);
+        printf("[STORAGE] [FAIL] f_open(APPEND) = %d\r\n", res);
         return -1;
     }
 
     UINT bw;
     res = f_write(&fil, data, strlen(data), &bw);
+    printf("[STORAGE] [INFO] f_write => %d, bytes_written=%u\r\n", res, bw);
     f_close(&fil);
 
-    return (res == FR_OK) ? 0 : -1;
+    if (res == FR_OK) {
+        printf("[STORAGE] [OK] Appended %u bytes\r\n", bw);
+        return 0;
+    }
+    printf("[STORAGE] [FAIL] Append write failed\r\n");
+    return -1;
 }
 
 // List Files
@@ -559,14 +621,23 @@ void sd_list_files(void)
 {
     DIR dir;
     FILINFO fno;
+    uint32_t total = 0;
 
+    printf("[STORAGE] === LISTING FILES ===\r\n");
     if (f_opendir(&dir, "/") == FR_OK) {
-        printf("\n[STORAGE] Files on SD Card:\r\n");
-        printf("---------------------------\r\n");
         while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0) {
-            printf("  %s (%lu bytes)\r\n", fno.fname, fno.fsize);
+            printf("  %-20s %10lu bytes\r\n", fno.fname, (unsigned long)fno.fsize);
+            total++;
         }
-        printf("---------------------------\r\n");
+        if (total == 0) {
+            printf("  (empty directory)\r\n");
+        } else {
+            printf("  --------------------------\r\n");
+            printf("  TOTAL: %lu files\r\n", (unsigned long)total);
+        }
         f_closedir(&dir);
+    } else {
+        printf("[STORAGE] [FAIL] f_opendir failed\r\n");
     }
+    printf("[STORAGE] === LIST END ===\r\n");
 }

@@ -6,6 +6,7 @@
 #include "../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h"
 #include "Sd_spi.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Disk status */
 static volatile DSTATUS Stat = STA_NOINIT;
@@ -21,11 +22,17 @@ static volatile DSTATUS Stat = STA_NOINIT;
   */
 DSTATUS SD_initialize(BYTE pdrv)
 {
+    printf("[DISKIO] SD_initialize(pdrv=%u) called by FatFs\r\n", pdrv);
     Stat = STA_NOINIT;
 
     if (sd_init() == 0)
     {
         Stat &= ~STA_NOINIT;
+        printf("[DISKIO] [OK] SD_initialize done, Stat=0x%02X\r\n", Stat);
+    }
+    else
+    {
+        printf("[DISKIO] [FAIL] SD_initialize failed\r\n");
     }
 
     return Stat;
@@ -38,6 +45,7 @@ DSTATUS SD_initialize(BYTE pdrv)
   */
 DSTATUS SD_status(BYTE pdrv)
 {
+    printf("[DISKIO] SD_status(pdrv=%u) => Stat=0x%02X\r\n", pdrv, Stat);
     return Stat;
 }
 
@@ -51,20 +59,29 @@ DSTATUS SD_status(BYTE pdrv)
   */
 DRESULT SD_read(BYTE pdrv, BYTE *buff, DWORD sector, UINT count)
 {
-    if (Stat & STA_NOINIT)
+    if (Stat & STA_NOINIT) {
+        printf("[DISKIO] SD_read(pdrv=%u, sector=%lu, count=%u) => RES_NOTRDY\r\n", pdrv, (unsigned long)sector, count);
         return RES_NOTRDY;
+    }
+
+    printf("[DISKIO] SD_read(pdrv=%u, sector=%lu, count=%u) ... ", pdrv, (unsigned long)sector, count);
 
     if (count == 1)
     {
-        if (sd_read_block(buff, sector) == 0)
+        if (sd_read_block(buff, sector) == 0) {
+            printf("OK (1 block)\r\n");
             return RES_OK;
+        }
     }
     else
     {
-        if (sd_read_blocks(buff, sector, count) == 0)
+        if (sd_read_blocks(buff, sector, count) == 0) {
+            printf("OK (%u blocks)\r\n", count);
             return RES_OK;
+        }
     }
 
+    printf("ERROR\r\n");
     return RES_ERROR;
 }
 
@@ -79,20 +96,29 @@ DRESULT SD_read(BYTE pdrv, BYTE *buff, DWORD sector, UINT count)
 #if _USE_WRITE == 1
 DRESULT SD_write(BYTE pdrv, const BYTE *buff, DWORD sector, UINT count)
 {
-    if (Stat & STA_NOINIT)
+    if (Stat & STA_NOINIT) {
+        printf("[DISKIO] SD_write(pdrv=%u, sector=%lu, count=%u) => RES_NOTRDY\r\n", pdrv, (unsigned long)sector, count);
         return RES_NOTRDY;
+    }
+
+    printf("[DISKIO] SD_write(pdrv=%u, sector=%lu, count=%u) ... ", pdrv, (unsigned long)sector, count);
 
     if (count == 1)
     {
-        if (sd_write_block(buff, sector) == 0)
+        if (sd_write_block(buff, sector) == 0) {
+            printf("OK (1 block)\r\n");
             return RES_OK;
+        }
     }
     else
     {
-        if (sd_write_blocks(buff, sector, count) == 0)
+        if (sd_write_blocks(buff, sector, count) == 0) {
+            printf("OK (%u blocks)\r\n", count);
             return RES_OK;
+        }
     }
 
+    printf("ERROR\r\n");
     return RES_ERROR;
 }
 #endif /* _USE_WRITE == 1 */
@@ -114,30 +140,31 @@ DRESULT SD_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 
     switch (cmd)
     {
-        /* Make sure that no pending write process */
         case CTRL_SYNC:
+            printf("[DISKIO] SD_ioctl(CTRL_SYNC)\r\n");
             res = RES_OK;
             break;
 
-        /* Get number of sectors on the disk (DWORD) */
         case GET_SECTOR_COUNT:
             *(DWORD*)buff = 1024000;  // Dummy 500MB
+            printf("[DISKIO] SD_ioctl(GET_SECTOR_COUNT) => 1024000 sectors (~500 MB)\r\n");
             res = RES_OK;
             break;
 
-        /* Get R/W sector size (WORD) */
         case GET_SECTOR_SIZE:
             *(WORD*)buff = 512;
+            printf("[DISKIO] SD_ioctl(GET_SECTOR_SIZE) => 512\r\n");
             res = RES_OK;
             break;
 
-        /* Get erase block size in unit of sector (DWORD) */
         case GET_BLOCK_SIZE:
             *(DWORD*)buff = 8;  // 4KB erase block
+            printf("[DISKIO] SD_ioctl(GET_BLOCK_SIZE) => 8\r\n");
             res = RES_OK;
             break;
 
         default:
+            printf("[DISKIO] SD_ioctl(cmd=%u) => RES_PARERR\r\n", cmd);
             res = RES_PARERR;
     }
 

@@ -6,3 +6,8 @@
 **/*.d
 **/*.su
 **/*.cyclo
+*.elf
+*.hex
+*.bin
+*.map
+vaulted_codes/
