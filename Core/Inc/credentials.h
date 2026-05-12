@@ -8,7 +8,7 @@
 #define BACKEND_CONFIG_URL "https://brothers-publication-nato-incorporate.trycloudflare.com/config"
 #define BACKEND_UPLOAD_URL "https://brothers-publication-nato-incorporate.trycloudflare.com/upload"
 #define BACKEND_HOST       "brothers-publication-nato-incorporate.trycloudflare.com"
-#define BACKEND_API_KEY    "LIND2026ANTONIO"
+#define BACKEND_API_KEY    ""
 
 #define MODEM_APN           "bam.entelpcs.cl"
 #define MODEM_APN_USER      ""
