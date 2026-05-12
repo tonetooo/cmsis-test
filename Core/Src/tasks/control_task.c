@@ -17,6 +17,7 @@
 #include <math.h>
 
 extern float trigger_g;
+extern osMutexId_t uart_mutexHandle;
 
 volatile uint8_t sdbg_abort_acq = 0;
 
@@ -212,8 +213,10 @@ void StartControlTask(void *argument) {
     for (;;) {
         // Try to receive a byte with timeout
         if (HAL_UART_Receive(&huart2, &rx_byte, 1, UART_CLI_TIMEOUT_MS) == HAL_OK) {
-            // Echo back
+            // Echo back (protected by UART mutex to avoid HAL_BUSY)
+            if (uart_mutexHandle != NULL) osMutexAcquire(uart_mutexHandle, osWaitForever);
             HAL_UART_Transmit(&huart2, &rx_byte, 1, 10);
+            if (uart_mutexHandle != NULL) osMutexRelease(uart_mutexHandle);
 
             // Process received character
             if (rx_byte == '\r' || rx_byte == '\n') {

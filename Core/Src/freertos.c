@@ -80,7 +80,7 @@ osThreadId_t control_taskHandle;
 const osThreadAttr_t control_task_attributes = {
   .name = "control_task",
   .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for sensor_queue */
 osMessageQueueId_t sensor_queueHandle;
