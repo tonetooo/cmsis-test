@@ -11,7 +11,7 @@
 #include <string.h>
 
 // Simulation mode flag - set to 1 to enable simulation
-#define MODEM_SIMULATION_ENABLED 1
+#define MODEM_SIMULATION_ENABLED 0
 
 // Simulated UART handle for modem (points to huart2 which we can use for CLI)
 static UART_HandleTypeDef* sim_modem_uart = NULL;

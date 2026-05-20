@@ -34,6 +34,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef ENABLE_TESTS
+#include "test_suite.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -180,15 +183,15 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  Modem_Init(&huart1);
+  // Modem_Init(&huart1);  // COMMENTED OUT: software isolation test for SD card
   printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
 
-  if (ADXL355_Init(&hspi2)) {
-      printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
-      ADXL355_LevelToZero();
-  } else {
-      printf("[SENSOR] ADXL355 Initialization Failed\r\n");
-  }
+  // if (ADXL355_Init(&hspi2)) {  // COMMENTED OUT: software isolation test for SD card
+  //     printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
+  //     ADXL355_LevelToZero();
+  // } else {
+  //     printf("[SENSOR] ADXL355 Initialization Failed\r\n");
+  // }
 
   if (sd_mount() == 0) {
       fres = FR_OK;
@@ -196,12 +199,23 @@ int main(void)
       fres = FR_NOT_READY;
   }
 
+#ifdef ENABLE_TESTS
+  printf("\r\n*** TEST MODE: Running test suite (ENABLE_TESTS defined) ***\r\n");
+  run_test_suite();
+  printf("\r\n*** TEST MODE: Halting. Power-cycle to exit. ***\r\n");
+  while (1);
+#endif
+
   /* RTOS takes over from here -- tasks handle acquisition, upload, and CLI */
   /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();
-  uart_mutexHandle = osMutexNew(NULL);
+
+  /* Create UART mutex */
+  static const osMutexAttr_t uart_mutex_attr = { .name = "uart_mutex" };
+  uart_mutexHandle = osMutexNew(&uart_mutex_attr);
+
   MX_FREERTOS_Init();
 
   /* Start scheduler */

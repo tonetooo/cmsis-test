@@ -103,19 +103,12 @@ DRESULT SD_write(BYTE pdrv, const BYTE *buff, DWORD sector, UINT count)
 
     printf("[DISKIO] SD_write(pdrv=%u, sector=%lu, count=%u) ... ", pdrv, (unsigned long)sector, count);
 
-    if (count == 1)
-    {
-        if (sd_write_block(buff, sector) == 0) {
-            printf("OK (1 block)\r\n");
-            return RES_OK;
-        }
-    }
-    else
-    {
-        if (sd_write_blocks(buff, sector, count) == 0) {
-            printf("OK (%u blocks)\r\n", count);
-            return RES_OK;
-        }
+    // NOTE: Always use sd_write_blocks (CMD25 multi-block) even for count==1.
+    // CMD24 single-block write was found to accept data silently without persisting
+    // on some SD cards in SPI mode.
+    if (sd_write_blocks(buff, sector, count) == 0) {
+        printf("OK (%u blocks)\r\n", count);
+        return RES_OK;
     }
 
     printf("ERROR\r\n");
@@ -146,8 +139,9 @@ DRESULT SD_ioctl(BYTE pdrv, BYTE cmd, void *buff)
             break;
 
         case GET_SECTOR_COUNT:
-            *(DWORD*)buff = 1024000;  // Dummy 500MB
-            printf("[DISKIO] SD_ioctl(GET_SECTOR_COUNT) => 1024000 sectors (~500 MB)\r\n");
+            *(DWORD*)buff = sd_get_sector_count();
+            printf("[DISKIO] SD_ioctl(GET_SECTOR_COUNT) => %lu sectors (~%lu MB)\r\n",
+                   (unsigned long)*(DWORD*)buff, (unsigned long)(*(DWORD*)buff / 2048));
             res = RES_OK;
             break;
 

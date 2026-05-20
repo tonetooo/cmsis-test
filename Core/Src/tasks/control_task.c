@@ -11,10 +11,19 @@
 #include "adxl355.h"
 #include "Sd_spi.h"
 #include "ff.h"
+#include "quectel_drive.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+
+/* UART register helper for diagnostic */
+static inline uint16_t uart_read_sr(UART_HandleTypeDef *hu) {
+    return hu->Instance->SR;
+}
+static inline uint16_t uart_read_cr1(UART_HandleTypeDef *hu) {
+    return hu->Instance->CR1;
+}
 
 extern float trigger_g;
 extern osMutexId_t uart_mutexHandle;
@@ -41,8 +50,13 @@ static void print_csv_row(const char* r) {
 
 static void Show_CSV_Table(const char* filename) {
     FIL tf;
+    if (osMutexAcquire(sd_mutexHandle, 5000) != osOK) {
+        printf("[FAIL] Could not acquire SD mutex for table display\r\n");
+        return;
+    }
     if (f_open(&tf, filename, FA_READ) != FR_OK) {
         printf("[FAIL] Cannot open %s for table display\r\n", filename);
+        osMutexRelease(sd_mutexHandle);
         return;
     }
 
@@ -78,7 +92,7 @@ static void Show_CSV_Table(const char* filename) {
     printf("| Avg bytes/line: %-30.1f |\r\n", total > 0 ? (float)fsize / total : 0.0f);
     printf("+============================================+\r\n\n");
 
-    if (total == 0) { printf("(empty file)\r\n"); return; }
+    if (total == 0) { printf("(empty file)\r\n"); osMutexRelease(sd_mutexHandle); return; }
 
     uint32_t data_total = (total > 0) ? total - 1 : 0;
 
@@ -111,6 +125,7 @@ static void Show_CSV_Table(const char* filename) {
     printf("| Samples: %-55lu |\r\n", (unsigned long)data_total);
     printf("%s", sep);
     printf("\n");
+    osMutexRelease(sd_mutexHandle);
 }
 
 static void Run_SD_Test(void) {
@@ -208,11 +223,38 @@ void StartControlTask(void *argument) {
     const char* prompt = "\r\nHERMES> ";
 
     printf("[CONTROL] Task started (prio=BelowNormal)\r\n");
+
+    /* UART2 diagnostic at boot */
+    uint16_t sr = uart_read_sr(&huart2);
+    uint16_t cr1 = uart_read_cr1(&huart2);
+    printf("[UART2-DIAG] SR=0x%04X CR1=0x%04X\r\n", (unsigned)sr, (unsigned)cr1);
+    printf("[UART2-DIAG] UE=%d RE=%d TE=%d RXNE=%d ORE=%d\r\n",
+           (int)((cr1 >> 13) & 1), (int)((cr1 >> 2) & 1), (int)((cr1 >> 3) & 1),
+           (int)((sr >> 5) & 1), (int)((sr >> 3) & 1));
+
     printf("%s", prompt);
 
+    uint32_t poll_loops = 0;
     for (;;) {
-        // Try to receive a byte with timeout
-        if (HAL_UART_Receive(&huart2, &rx_byte, 1, UART_CLI_TIMEOUT_MS) == HAL_OK) {
+        // Drain UART: read all available bytes with zero-wait after first
+        uint8_t got_byte = 0;
+        do {
+            // Clear overrun error before polling
+            if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE)) {
+                __HAL_UART_CLEAR_FLAG(&huart2, UART_FLAG_ORE);
+                printf("[UART2] ORE cleared\r\n");
+            }
+
+            uint32_t poll_timeout = got_byte ? 0 : UART_CLI_TIMEOUT_MS;
+            HAL_StatusTypeDef uart_ret = HAL_UART_Receive(&huart2, &rx_byte, 1, poll_timeout);
+            if (uart_ret != HAL_OK) {
+                if (uart_ret == HAL_ERROR && poll_loops % 100 == 0) {
+                    printf("[UART2] HAL_ERROR SR=0x%04X\r\n", (unsigned)uart_read_sr(&huart2));
+                }
+                break;
+            }
+            got_byte = 1;
+
             // Echo back (protected by UART mutex to avoid HAL_BUSY)
             if (uart_mutexHandle != NULL) osMutexAcquire(uart_mutexHandle, osWaitForever);
             HAL_UART_Transmit(&huart2, &rx_byte, 1, 10);
@@ -233,6 +275,7 @@ void StartControlTask(void *argument) {
                         printf("  log     - List log files on SD\r\n");
                         printf("  test    - Simulate motion (pipeline test)\r\n");
                         printf("  sdtest  - SD test: 10s forced acquisition + ASCII table\r\n");
+                        printf("  modem_on - Power on modem and test AT sync\r\n");
                     } else if (strcmp(cmd_buffer, "status") == 0) {
                         printf("\r\nSystem Status:\r\n");
                         printf("  Trigger threshold: %.3f G\r\n", trigger_g);
@@ -257,6 +300,15 @@ void StartControlTask(void *argument) {
                     } else if (strcmp(cmd_buffer, "log") == 0) {
                         printf("\r\nLog files: (not implemented)\r\n");
                         // TODO: Implement SD card file listing using sd_mutex
+                    } else if (strcmp(cmd_buffer, "modem_on") == 0) {
+                        printf("\r\n[CMD] Powering on modem (real hardware)...\r\n");
+                        HAL_StatusTypeDef ret = Modem_PowerOn();
+                        printf("[CMD] Modem_PowerOn returned: %d\r\n", (int)ret);
+                        if (ret == HAL_OK) {
+                            printf("[CMD] Modem ready! Test AT...\r\n");
+                            ret = Modem_SendAT("AT", "OK", 1000);
+                            printf("[CMD] Modem_SendAT(AT) returned: %d\r\n", (int)ret);
+                        }
                     } else if (strcmp(cmd_buffer, "sdtest") == 0) {
                         Run_SD_Test();
                     } else if (strcmp(cmd_buffer, "test") == 0) {
@@ -278,7 +330,8 @@ void StartControlTask(void *argument) {
                 cmd_buffer[cmd_index++] = rx_byte;
             }
             // Ignore other characters (like delete, etc.) for simplicity
-        }
+        } while (got_byte && cmd_index < (CMD_BUFFER_SIZE - 1));
+        poll_loops++;
         // Small delay to prevent CPU hogging if no data
         osDelay(1);
     }

@@ -6,7 +6,7 @@
 #include <string.h>
 #include "credentials.h"
 
-#define MODEM_SIMULATION_ENABLED 1
+#define MODEM_SIMULATION_ENABLED 0
 
 static UART_HandleTypeDef *_modem_uart;
 static char modem_rx_buffer[MODEM_BUFFER_SIZE];
@@ -217,8 +217,8 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
             }
             
             uint8_t byte;
+
             __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
-            
             if(HAL_UART_Receive(_modem_uart, &byte, 1, 10) == HAL_OK) {
                 total_bytes++;
                 if (byte == 0x00) { null_count++; continue; }
