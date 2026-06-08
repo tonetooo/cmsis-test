@@ -12,6 +12,7 @@
 #include "Sd_spi.h"
 #include "ff.h"
 #include "quectel_drive.h"
+#include "algo/cli_algo.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -137,8 +138,10 @@ static void Run_SD_Test(void) {
     printf("\r\n=== SD TEST (forced 10s acquisition) ===\r\n");
 
     /* Mask ADXL_INT1 so sensor task stays idle during the whole test */
+    __disable_irq();
     EXTI->IMR &= ~adxl_mask;
     EXTI->PR = adxl_mask;
+    __enable_irq();
     osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
     sdbg_abort_acq = 1;
 
@@ -211,8 +214,10 @@ static void Run_SD_Test(void) {
 cleanup:
     /* Clear event flag BEFORE clearing abort flag, so sensor task sees clean state */
     osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+    __disable_irq();
     EXTI->PR = adxl_mask;
     EXTI->IMR |= adxl_mask;
+    __enable_irq();
     sdbg_abort_acq = 0;
 }
 
@@ -265,60 +270,73 @@ void StartControlTask(void *argument) {
                 // Null terminate and process command
                 cmd_buffer[cmd_index] = '\0';
                 if (cmd_index > 0) {
-                    // Process command
-                    if (strcmp(cmd_buffer, "help") == 0) {
-                        printf("\r\nAvailable commands:\r\n");
-                        printf("  help    - Show this help\r\n");
-                        printf("  status  - Show system status\r\n");
-                        printf("  accel   - Read current accelerometer data\r\n");
-                        printf("  trigger - Show/set trigger threshold (G)\r\n");
-                        printf("  log     - List log files on SD\r\n");
-                        printf("  test    - Simulate motion (pipeline test)\r\n");
-                        printf("  sdtest  - SD test: 10s forced acquisition + ASCII table\r\n");
-                        printf("  modem_on - Power on modem and test AT sync\r\n");
-                    } else if (strcmp(cmd_buffer, "status") == 0) {
-                        printf("\r\nSystem Status:\r\n");
-                        printf("  Trigger threshold: %.3f G\r\n", trigger_g);
-                        // TODO: Add more status info (task states, SD usage, etc.)
-                    } else if (strcmp(cmd_buffer, "accel") == 0) {
-                        ADXL355_Data_t data;
-                        ADXL355_Read_Data(&data);
-                        printf("\r\nAccelerometer:\r\n");
-                        printf("  X: %.3f g\r\n", data.x_g);
-                        printf("  Y: %.3f g\r\n", data.y_g);
-                        printf("  Z: %.3f g\r\n", data.z_g);
-                    } else if (strncmp(cmd_buffer, "trigger ", 8) == 0) {
-                        float new_trigger = atof(cmd_buffer + 8);
-                        if (new_trigger > 0.0f && new_trigger < 10.0f) {
-                            trigger_g = new_trigger;
-                            printf("\r\nTrigger threshold set to %.3f G\r\n", trigger_g);
-                        } else {
-                            printf("\r\nInvalid trigger value (must be 0-10 G)\r\n");
+                    CliParseResult_t parsed = cli_parse_cmd(cmd_buffer);
+                    switch (parsed.cmd) {
+                        case CLI_HELP:
+                            printf("\r\nAvailable commands:\r\n");
+                            printf("  help    - Show this help\r\n");
+                            printf("  status  - Show system status\r\n");
+                            printf("  accel   - Read current accelerometer data\r\n");
+                            printf("  trigger - Show/set trigger threshold (G)\r\n");
+                            printf("  log     - List log files on SD\r\n");
+                            printf("  test    - Simulate motion (pipeline test)\r\n");
+                            printf("  sdtest  - SD test: 10s forced acquisition + ASCII table\r\n");
+                            printf("  modem_on - Power on modem and test AT sync\r\n");
+                            break;
+                        case CLI_STATUS:
+                            printf("\r\nSystem Status:\r\n");
+                            printf("  Trigger threshold: %.3f G\r\n", trigger_g);
+                            // TODO: Add more status info (task states, SD usage, etc.)
+                            break;
+                        case CLI_ACCEL: {
+                            ADXL355_Data_t data;
+                            ADXL355_Read_Data(&data);
+                            printf("\r\nAccelerometer:\r\n");
+                            printf("  X: %.3f g\r\n", data.x_g);
+                            printf("  Y: %.3f g\r\n", data.y_g);
+                            printf("  Z: %.3f g\r\n", data.z_g);
+                            break;
                         }
-                    } else if (strcmp(cmd_buffer, "trigger") == 0) {
-                        printf("\r\nCurrent trigger threshold: %.3f G\r\n", trigger_g);
-                    } else if (strcmp(cmd_buffer, "log") == 0) {
-                        printf("\r\nLog files: (not implemented)\r\n");
-                        // TODO: Implement SD card file listing using sd_mutex
-                    } else if (strcmp(cmd_buffer, "modem_on") == 0) {
-                        printf("\r\n[CMD] Powering on modem (real hardware)...\r\n");
-                        HAL_StatusTypeDef ret = Modem_PowerOn();
-                        printf("[CMD] Modem_PowerOn returned: %d\r\n", (int)ret);
-                        if (ret == HAL_OK) {
-                            printf("[CMD] Modem ready! Test AT...\r\n");
-                            ret = Modem_SendAT("AT", "OK", 1000);
-                            printf("[CMD] Modem_SendAT(AT) returned: %d\r\n", (int)ret);
-                        }
-                    } else if (strcmp(cmd_buffer, "sdtest") == 0) {
-                        Run_SD_Test();
-                    } else if (strcmp(cmd_buffer, "test") == 0) {
-                        printf("\r\nSimulating motion event...\r\n");
-                        printf("  Setting EVT_MOTION_DETECTED -> sensor_task starts\r\n");
-                        printf("  -> sensor_task queues data -> file_task writes SD\r\n");
-                        printf("  -> modem_task simulates upload (5s)\r\n");
-                        osEventFlagsSet(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
-                    } else {
-                        printf("\r\nUnknown command: %s\r\n", cmd_buffer);
+                        case CLI_TRIGGER_SET:
+                            if (parsed.valid) {
+                                trigger_g = parsed.value;
+                                printf("\r\nTrigger threshold set to %.3f G\r\n", trigger_g);
+                            } else {
+                                printf("\r\nInvalid trigger value (must be 0-10 G)\r\n");
+                            }
+                            break;
+                        case CLI_TRIGGER_GET:
+                            printf("\r\nCurrent trigger threshold: %.3f G\r\n", trigger_g);
+                            break;
+                        case CLI_LOG:
+                            printf("\r\nLog files: (not implemented)\r\n");
+                            // TODO: Implement SD card file listing using sd_mutex
+                            break;
+                        case CLI_MODEM_ON:
+                            printf("\r\n[CMD] Powering on modem (real hardware)...\r\n");
+                            {
+                                HAL_StatusTypeDef ret = Modem_PowerOn();
+                                printf("[CMD] Modem_PowerOn returned: %d\r\n", (int)ret);
+                                if (ret == HAL_OK) {
+                                    printf("[CMD] Modem ready! Test AT...\r\n");
+                                    ret = Modem_SendAT("AT", "OK", 1000);
+                                    printf("[CMD] Modem_SendAT(AT) returned: %d\r\n", (int)ret);
+                                }
+                            }
+                            break;
+                        case CLI_SDTEST:
+                            Run_SD_Test();
+                            break;
+                        case CLI_TEST:
+                            printf("\r\nSimulating motion event...\r\n");
+                            printf("  Setting EVT_MOTION_DETECTED -> sensor_task starts\r\n");
+                            printf("  -> sensor_task queues data -> file_task writes SD\r\n");
+                            printf("  -> modem_task simulates upload (5s)\r\n");
+                            osEventFlagsSet(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+                            break;
+                        default:
+                            printf("\r\nUnknown command: %s\r\n", cmd_buffer);
+                            break;
                     }
                     printf("%s", prompt);
                 } else {

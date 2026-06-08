@@ -63,7 +63,7 @@ uint8_t ADXL355_Init(SPI_HandleTypeDef *hspi) {
     }
 
     if (devid_ad != 0xAD || devid_mst != 0x1D || partid != 0xED) {
-        printf("Error: IDs mismatch. AD:0x%02X(Exp:0xAD), MST:0x%02X(Exp:0x1D), PART:0x%02X(Exp:0xED)\r\n", devid_ad, devid_mst, partid);
+        printf("[ADXL] ID-MISMATCH AD=0x%02X MST=0x%02X PART=0x%02X\r\n", devid_ad, devid_mst, partid);
         return 0; // Error
     }
     
@@ -220,7 +220,7 @@ void ADXL355_Config_WakeOnMotion(float threshold_g, uint8_t count) {
 }
 
 void ADXL355_LevelToZero(void) {
-    printf("[CAL] Iniciando level-to-zero, mantenga el sensor quieto...\r\n");
+    printf("[ADXL][CAL] ZEROING hold still\r\n");
     HAL_Delay(200);
     const int samples = 512;
     float sum_x = 0.0f;
@@ -241,9 +241,9 @@ void ADXL355_LevelToZero(void) {
     adxl_offset_y_g = avg_y;
     adxl_offset_z_g = avg_z;
     adxl_offsets_valid = 1;
-    printf("[CAL] Promedio en reposo (g): X=%.4f, Y=%.4f, Z=%.4f\r\n", avg_x, avg_y, avg_z);
-    printf("[CAL] Offsets aplicados (g): X=%.4f, Y=%.4f, Z=%.4f\r\n", adxl_offset_x_g, adxl_offset_y_g, adxl_offset_z_g);
-    printf("[CAL] Level-to-zero completado; lecturas futuras se corrigen con estos offsets.\r\n");
+    printf("[ADXL][CAL] AVG X=%.4f Y=%.4f Z=%.4f\r\n", avg_x, avg_y, avg_z);
+    printf("[ADXL][CAL] OFFSET X=%.4f Y=%.4f Z=%.4f\r\n", adxl_offset_x_g, adxl_offset_y_g, adxl_offset_z_g);
+    printf("[ADXL][CAL] ZERO-DONE\r\n");
 }
 
 static void ADXL355_Read_Data_Internal(ADXL355_Data_t *data, uint8_t apply_offsets) {

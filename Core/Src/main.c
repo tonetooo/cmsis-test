@@ -101,7 +101,7 @@ void Apply_Remote_Config(const char* key, const char* val) {
             ADXL355_Set_Range(ADXL355_RANGE_8G);
             cur_range_idx = 2;
         }
-        printf("[CONFIG] RANGE set to %s\r\n", range_str[cur_range_idx]);
+        printf("[CFG] RANGE=%s\r\n", range_str[cur_range_idx]);
     } else if (strcmp(key, "ODR_HZ") == 0) {
         int odr = atoi(val);
         switch (odr) {
@@ -120,7 +120,7 @@ void Apply_Remote_Config(const char* key, const char* val) {
         float t = atof(val);
         if (t > 0.0f) {
             trigger_g = t;
-            printf("[CONFIG] Trigger set to %.2f G\r\n", trigger_g);
+            printf("[CFG] TRIG=%.2fG\r\n", trigger_g);
         }
     } else if (strcmp(key, "HPF") == 0) {
         uint8_t enable = 0;
@@ -183,15 +183,18 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // Modem_Init(&huart1);  // COMMENTED OUT: software isolation test for SD card
   printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
 
-  // if (ADXL355_Init(&hspi2)) {  // COMMENTED OUT: software isolation test for SD card
-  //     printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
-  //     ADXL355_LevelToZero();
-  // } else {
-  //     printf("[SENSOR] ADXL355 Initialization Failed\r\n");
-  // }
+  if (ADXL355_Init(&hspi2)) {
+      printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
+      ADXL355_LevelToZero();
+      ADXL355_Config_WakeOnMotion(trigger_g, 5);  // 0.020G threshold, 5 consecutive samples
+      printf("[SENSOR] Wake-on-motion configured: threshold=%.3fG\r\n", trigger_g);
+  } else {
+      printf("[SENSOR] ADXL355 Initialization Failed\r\n");
+  }
+
+  Modem_Init(&huart1);
 
   if (sd_mount() == 0) {
       fres = FR_OK;
