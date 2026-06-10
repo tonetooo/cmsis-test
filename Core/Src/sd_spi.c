@@ -178,12 +178,18 @@ uint8_t sd_init(void)
 
     // CMD0: GO_IDLE_STATE
     printf("[STORAGE] Step 3/7: Sending CMD0 (GO_IDLE_STATE)...\r\n");
+    printf("[STORAGE] [DIAG] CS pin PB6 ODR before CMD0 loop = 0x%08lX\r\n", (unsigned long)GPIOB->ODR);
     retry = 0;
     do {
         SD_CS_HIGH();
         spi_send(0xFF);
         
         SD_CS_LOW();
+        if (retry == 0) {
+            printf("[STORAGE] [DIAG] CS=LO: PB6_ODR=0x%08lX (bit6=%d)\r\n",
+                   (unsigned long)GPIOB->ODR,
+                   (int)((GPIOB->ODR >> 6) & 1));
+        }
         res = sd_send_cmd(CMD0, 0);
         SD_CS_HIGH();
         
@@ -584,8 +590,39 @@ int sd_mount(void)
 
     printf("[STORAGE] === MOUNT START ===\r\n");
     printf("[STORAGE] Phase 1/4: SD hardware init...\r\n");
-    if (sd_init() != 0) {
-        printf("[STORAGE] [FAIL] SD hardware init failed\r\n");
+
+    /* Retry loop: sometimes SD needs a second power-on attempt */
+    int sd_retries = 3;
+    int sd_ok = 0;
+    for (int attempt = 1; attempt <= sd_retries; attempt++) {
+        printf("[STORAGE] [RETRY] SD init attempt %d/%d\r\n", attempt, sd_retries);
+        if (sd_init() == 0) {
+            sd_ok = 1;
+            printf("[STORAGE] [OK] SD init succeeded on attempt %d\r\n", attempt);
+            break;
+        }
+        if (attempt < sd_retries) {
+            printf("[STORAGE] [RETRY] De-initing SPI1 and toggling CS 20x to wake SD...\r\n");
+            /* Fully de-init SPI to clear any stuck state */
+            HAL_SPI_DeInit(&SD_SPI_HANDLE);
+            HAL_Delay(100);
+            /* Toggle CS 20x rapidly to wake card from glitch state */
+            for (int t = 0; t < 20; t++) {
+                SD_CS_LOW();
+                HAL_Delay(10);
+                SD_CS_HIGH();
+                HAL_Delay(10);
+            }
+            /* Re-init SPI at slow speed */
+            SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+            HAL_SPI_Init(&SD_SPI_HANDLE);
+            printf("[STORAGE] [RETRY] Waiting 500ms before next attempt...\r\n");
+            HAL_Delay(500);
+        }
+    }
+
+    if (!sd_ok) {
+        printf("[STORAGE] [FAIL] SD hardware init failed after %d attempts\r\n", sd_retries);
         return -1;
     }
     printf("[STORAGE] [OK] SD hardware init complete\r\n");
