@@ -2,6 +2,7 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include <stdio.h>
+#include <string.h>
 
 // Global handle for SPI (must be defined in main.c)
 static SPI_HandleTypeDef *adxl_hspi;
@@ -11,6 +12,40 @@ static float adxl_offset_x_g = 0.0f;
 static float adxl_offset_y_g = 0.0f;
 static float adxl_offset_z_g = 0.0f;
 static uint8_t adxl_offsets_valid = 0;
+static volatile uint32_t adxl_spi_error_count = 0;
+
+// Retry wrapper for HAL_SPI_Transmit (3 attempts, 1ms delay between)
+static HAL_StatusTypeDef spi_tx(SPI_HandleTypeDef *hspi, uint8_t *data, uint16_t size, uint32_t timeout) {
+    HAL_StatusTypeDef s;
+    for (int r = 0; r < 3; r++) {
+        s = HAL_SPI_Transmit(hspi, data, size, timeout);
+        if (s == HAL_OK) return HAL_OK;
+        osDelay(1);
+    }
+    adxl_spi_error_count++;
+    printf("[SPI ERR] TX fail (size=%u, status=%d, total=%lu)\r\n",
+           size, (int)s, (unsigned long)adxl_spi_error_count);
+    return s;
+}
+
+// Retry wrapper for HAL_SPI_Receive (3 attempts, 1ms delay between)
+static HAL_StatusTypeDef spi_rx(SPI_HandleTypeDef *hspi, uint8_t *data, uint16_t size, uint32_t timeout) {
+    HAL_StatusTypeDef s;
+    for (int r = 0; r < 3; r++) {
+        s = HAL_SPI_Receive(hspi, data, size, timeout);
+        if (s == HAL_OK) return HAL_OK;
+        osDelay(1);
+    }
+    adxl_spi_error_count++;
+    printf("[SPI ERR] RX fail (size=%u, status=%d, total=%lu)\r\n",
+           size, (int)s, (unsigned long)adxl_spi_error_count);
+    return s;
+}
+
+uint32_t ADXL355_Get_SPI_Error_Count(void) {
+    return adxl_spi_error_count;
+}
+
 static void ADXL355_Read_Data_Internal(ADXL355_Data_t *data, uint8_t apply_offsets);
 
 // Internal helpers
@@ -20,7 +55,7 @@ void ADXL355_Write_Reg(uint8_t reg, uint8_t value) {
     data[1] = value;
     
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(adxl_hspi, data, 2, 100);
+    spi_tx(adxl_hspi, data, 2, 100);
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
 }
 
@@ -29,8 +64,14 @@ uint8_t ADXL355_Read_Reg(uint8_t reg) {
     uint8_t rx_data = 0;
     
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(adxl_hspi, &tx_data, 1, 100);
-    HAL_SPI_Receive(adxl_hspi, &rx_data, 1, 100);
+    if (spi_tx(adxl_hspi, &tx_data, 1, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        return 0xFF;
+    }
+    if (spi_rx(adxl_hspi, &rx_data, 1, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        return 0xFF;
+    }
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
     
     return rx_data;
@@ -256,11 +297,21 @@ void ADXL355_LevelToZero(void) {
 
 static void ADXL355_Read_Data_Internal(ADXL355_Data_t *data, uint8_t apply_offsets) {
     uint8_t tx_data = (ADXL355_XDATA3 << 1) | 0x01;
-    uint8_t raw_data[9];
+    uint8_t raw_data[9] = {0};
     
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(adxl_hspi, &tx_data, 1, 100);
-    HAL_SPI_Receive(adxl_hspi, raw_data, 9, 100);
+    if (spi_tx(adxl_hspi, &tx_data, 1, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        memset(data, 0, sizeof(*data));
+        data->timestamp = HAL_GetTick();
+        return;
+    }
+    if (spi_rx(adxl_hspi, raw_data, 9, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        memset(data, 0, sizeof(*data));
+        data->timestamp = HAL_GetTick();
+        return;
+    }
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
     
     int32_t x = ((int32_t)raw_data[0] << 12) | ((int32_t)raw_data[1] << 4) | ((int32_t)raw_data[2] >> 4);
@@ -313,11 +364,19 @@ void ADXL355_Config_FIFO(uint8_t samples) {
 
 void ADXL355_Read_FIFO_Data(ADXL355_Data_t *data) {
     uint8_t tx_data = (ADXL355_FIFO_DATA << 1) | 0x01;
-    uint8_t raw_data[9];
+    uint8_t raw_data[9] = {0};
     
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(adxl_hspi, &tx_data, 1, 100);
-    HAL_SPI_Receive(adxl_hspi, raw_data, 9, 100);
+    if (spi_tx(adxl_hspi, &tx_data, 1, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        memset(data, 0, sizeof(*data));
+        return;
+    }
+    if (spi_rx(adxl_hspi, raw_data, 9, 100) != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        memset(data, 0, sizeof(*data));
+        return;
+    }
     HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
     
     // Check marker bits (Bit 0 of byte 2, 5, 8 indicates empty/special)

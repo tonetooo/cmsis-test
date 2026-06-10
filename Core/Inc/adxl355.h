@@ -83,5 +83,6 @@ int ADXL355_Read_FIFO_Burst(SPI_HandleTypeDef *hspi, ADXL355_Data_t *buffer, uin
 void ADXL355_LevelToZero(void);
 float ADXL355_Get_Full_Scale(void);
 uint8_t ADXL355_Read_Data_DMA(ADXL355_Data_t *data);
+uint32_t ADXL355_Get_SPI_Error_Count(void);
 
 #endif
