@@ -6,6 +6,7 @@
  */
 #include "tasks.h"
 #include "adxl355.h"
+#include "wdt.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -26,6 +27,7 @@ void StartSensorTask(void *argument) {
     uint32_t last_print = 0;
     printf("[SENSOR] Task started (prio=High)\r\n");
     for (;;) {
+        WDT_Refresh();
         /* Wait for motion trigger: EXTI interrupt + software polling fallback */
         osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
 
@@ -53,8 +55,9 @@ void StartSensorTask(void *argument) {
                        poll_mag, trigger_g);
                 break;
             }
-            /* Heartbeat each ~1s (10 iterations) */
+             /* Heartbeat each ~1s (10 iterations) + pet watchdog */
             if (heartbeat % 10 == 0) {
+                WDT_Refresh();
                 printf("[SENSOR] Waiting for motion... (%d)\r\n", (heartbeat / 10) - 1);
             }
         }
@@ -141,6 +144,7 @@ void StartSensorTask(void *argument) {
             }
             read_index++;
             osDelay(10); /* Precisos 10ms */
+            WDT_Refresh();
         }
         printf("[SENSOR] Acquisition loop exited (acquiring=%d)\r\n", (int)acquiring);
         /* Avisar a modem_task que hay datos disponibles */

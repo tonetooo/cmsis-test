@@ -12,6 +12,7 @@
 #include "Sd_spi.h"
 #include "ff.h"
 #include "quectel_drive.h"
+#include "wdt.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -242,6 +243,7 @@ void StartControlTask(void *argument) {
     printf("%s", prompt);
 
     for (;;) {
+        WDT_Refresh();
         /* Drain ring buffer: read all available bytes */
         while (USART2_ReadByte(&rx_byte)) {
             /* Echo back */

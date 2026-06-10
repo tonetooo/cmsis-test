@@ -1,4 +1,5 @@
 #include "tasks.h"
+#include "wdt.h"
 #include "ff.h"
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +21,7 @@ void StartFileTask(void *argument) {
     uint32_t mutex_contention_count = 0;
 
     for (;;) {
+        WDT_Refresh();
         SensorReading_t reading;
         osStatus_t status = osMessageQueueGet(sensor_queueHandle, &reading, NULL, 200);
 

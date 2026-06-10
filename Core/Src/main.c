@@ -29,6 +29,7 @@
 #include "adxl355.h"
 #include "ff.h"
 #include "quectel_drive.h"
+#include "wdt.h"
 #include "tasks.h"
 #include <stdio.h>
 #include <string.h>
@@ -184,6 +185,8 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  WDT_Init();
+  printf("[WDT] IWDG started (~16s timeout)\r\n");
   Modem_Init(&huart1);  // Initialize modem UART handle (needed for modem_task)
   printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
 
