@@ -125,6 +125,9 @@ void StartFileTask(void *argument) {
                     osEventFlagsSet(sensor_event_flagsHandle, EVT_FILE_READY);
                     printf("[FILE] [OK] EVT_FILE_READY signaled, modem_task will upload '%s'\r\n", filename);
 
+                    /* Clear ACQSTN_DONE so sensor_task knows file_task has finished */
+                    osEventFlagsClear(sensor_event_flagsHandle, EVT_ACQSTN_DONE);
+
                     file_open = 0;
                 }
             }
