@@ -108,6 +108,11 @@ void Modem_Init(UART_HandleTypeDef *huart) {
 }
 
 HAL_StatusTypeDef Modem_PowerOn(void) {
+    /* NULL guard: if Modem_Init was never called, don't crash */
+    if (_modem_uart == NULL) {
+        printf("[MODEM] ERROR: _modem_uart is NULL (Modem_Init not called)\r\n");
+        return HAL_ERROR;
+    }
 #if MODEM_SIMULATION_ENABLED
     printf("[MODEM-SIM] PowerOn (simulated)\r\n");
     return HAL_OK;
@@ -322,6 +327,10 @@ HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t tim
     HAL_Delay(20);
     return HAL_OK;
 #else
+    if (_modem_uart == NULL) {
+        printf("[MODEM][ERROR] Modem UART not initialized (Modem_Init never called)\r\n");
+        return HAL_ERROR;
+    }
     char full_cmd[128];
     snprintf(full_cmd, sizeof(full_cmd), "%s\r\n", command);
     
