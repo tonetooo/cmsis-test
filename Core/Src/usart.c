@@ -183,4 +183,39 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
 /* USER CODE BEGIN 1 */
 
+/* USART2 RX ring buffer (interrupt-driven) */
+static volatile uint8_t uart2_rx_buf[UART2_RX_BUF_SIZE];
+static volatile uint16_t uart2_rx_head = 0;
+static volatile uint16_t uart2_rx_tail = 0;
+static uint8_t uart2_rx_one_byte = 0;
+
+void USART2_Start_IT(void) {
+    /* Enable USART2 interrupt in NVIC */
+    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    /* Start first byte reception via interrupt */
+    HAL_UART_Receive_IT(&huart2, &uart2_rx_one_byte, 1);
+}
+
+uint8_t USART2_ReadByte(uint8_t *byte) {
+    uint16_t head = uart2_rx_head;
+    if (head == uart2_rx_tail) return 0; /* empty */
+
+    *byte = uart2_rx_buf[uart2_rx_tail];
+    uart2_rx_tail = (uart2_rx_tail + 1) % UART2_RX_BUF_SIZE;
+    return 1;
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART2) {
+        uint16_t next_head = (uart2_rx_head + 1) % UART2_RX_BUF_SIZE;
+        if (next_head != uart2_rx_tail) {
+            uart2_rx_buf[uart2_rx_head] = uart2_rx_one_byte;
+            uart2_rx_head = next_head;
+        }
+        /* Re-arm for next byte */
+        HAL_UART_Receive_IT(&huart2, &uart2_rx_one_byte, 1);
+    }
+}
+
 /* USER CODE END 1 */
