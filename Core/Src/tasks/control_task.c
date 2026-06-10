@@ -26,6 +26,13 @@ static inline uint16_t uart_read_cr1(UART_HandleTypeDef *hu) {
 }
 
 extern float trigger_g;
+extern uint8_t act_count;
+extern uint8_t hpf_enabled;
+extern uint8_t operation_mode;
+extern int cur_range_idx;
+extern int cur_odr_idx;
+extern const char* range_str[];
+extern const char* odr_str[];
 extern osMutexId_t uart_mutexHandle;
 
 volatile uint8_t sdbg_abort_acq = 0;
@@ -234,52 +241,37 @@ void StartControlTask(void *argument) {
 
     printf("%s", prompt);
 
-    uint32_t poll_loops = 0;
     for (;;) {
-        // Drain UART: read all available bytes with zero-wait after first
-        uint8_t got_byte = 0;
-        do {
-            // Clear overrun error before polling
-            if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE)) {
-                __HAL_UART_CLEAR_FLAG(&huart2, UART_FLAG_ORE);
-                printf("[UART2] ORE cleared\r\n");
-            }
-
-            uint32_t poll_timeout = got_byte ? 0 : UART_CLI_TIMEOUT_MS;
-            HAL_StatusTypeDef uart_ret = HAL_UART_Receive(&huart2, &rx_byte, 1, poll_timeout);
-            if (uart_ret != HAL_OK) {
-                if (uart_ret == HAL_ERROR && poll_loops % 100 == 0) {
-                    printf("[UART2] HAL_ERROR SR=0x%04X\r\n", (unsigned)uart_read_sr(&huart2));
-                }
-                break;
-            }
-            got_byte = 1;
-
-            // Echo back (protected by UART mutex to avoid HAL_BUSY)
+        /* Drain ring buffer: read all available bytes */
+        while (USART2_ReadByte(&rx_byte)) {
+            /* Echo back */
             if (uart_mutexHandle != NULL) osMutexAcquire(uart_mutexHandle, osWaitForever);
             HAL_UART_Transmit(&huart2, &rx_byte, 1, 10);
             if (uart_mutexHandle != NULL) osMutexRelease(uart_mutexHandle);
 
-            // Process received character
+            /* Process received character */
             if (rx_byte == '\r' || rx_byte == '\n') {
-                // Null terminate and process command
                 cmd_buffer[cmd_index] = '\0';
                 if (cmd_index > 0) {
-                    // Process command
                     if (strcmp(cmd_buffer, "help") == 0) {
                         printf("\r\nAvailable commands:\r\n");
-                        printf("  help    - Show this help\r\n");
-                        printf("  status  - Show system status\r\n");
-                        printf("  accel   - Read current accelerometer data\r\n");
-                        printf("  trigger - Show/set trigger threshold (G)\r\n");
-                        printf("  log     - List log files on SD\r\n");
-                        printf("  test    - Simulate motion (pipeline test)\r\n");
-                        printf("  sdtest  - SD test: 10s forced acquisition + ASCII table\r\n");
-                        printf("  modem_on - Power on modem and test AT sync\r\n");
+                        printf("  help       - Show this help\r\n");
+                        printf("  i          - System info (shortcut: i)\r\n");
+                        printf("  q          - Query accelerometer (shortcut: q)\r\n");
+                        printf("  status     - Show system status\r\n");
+                        printf("  accel      - Read current accelerometer data\r\n");
+                        printf("  trigger    - Show/set trigger threshold (G)\r\n");
+                        printf("  r          - Show full config (range, odr, trigger, hpf)\r\n");
+                        printf("  o          - Show ODR options\r\n");
+                        printf("  log / l    - List files on SD\r\n");
+                        printf("  test / t   - Simulate motion (pipeline test)\r\n");
+                        printf("  sdtest     - SD test: 10s forced acquisition + ASCII table\r\n");
+                        printf("  modem_on / m - Power on modem and test AT sync\r\n");
+                        printf("  sensstat   - Read ADXL355 STATUS register (ACT/DRDY bits)\r\n");
+                        printf("  readreg <hex> - Read any ADXL355 register (e.g. readreg 0x2C)\r\n");
                     } else if (strcmp(cmd_buffer, "status") == 0) {
                         printf("\r\nSystem Status:\r\n");
                         printf("  Trigger threshold: %.3f G\r\n", trigger_g);
-                        // TODO: Add more status info (task states, SD usage, etc.)
                     } else if (strcmp(cmd_buffer, "accel") == 0) {
                         ADXL355_Data_t data;
                         ADXL355_Read_Data(&data);
@@ -299,7 +291,6 @@ void StartControlTask(void *argument) {
                         printf("\r\nCurrent trigger threshold: %.3f G\r\n", trigger_g);
                     } else if (strcmp(cmd_buffer, "log") == 0) {
                         printf("\r\nLog files: (not implemented)\r\n");
-                        // TODO: Implement SD card file listing using sd_mutex
                     } else if (strcmp(cmd_buffer, "modem_on") == 0) {
                         printf("\r\n[CMD] Powering on modem (real hardware)...\r\n");
                         HAL_StatusTypeDef ret = Modem_PowerOn();
@@ -311,12 +302,89 @@ void StartControlTask(void *argument) {
                         }
                     } else if (strcmp(cmd_buffer, "sdtest") == 0) {
                         Run_SD_Test();
-                    } else if (strcmp(cmd_buffer, "test") == 0) {
+                    } else if (strcmp(cmd_buffer, "test") == 0 || strcmp(cmd_buffer, "t") == 0) {
                         printf("\r\nSimulating motion event...\r\n");
                         printf("  Setting EVT_MOTION_DETECTED -> sensor_task starts\r\n");
                         printf("  -> sensor_task queues data -> file_task writes SD\r\n");
-                        printf("  -> modem_task simulates upload (5s)\r\n");
                         osEventFlagsSet(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+                    } else if (strcmp(cmd_buffer, "i") == 0) {
+                        /* info → same as status */
+                        printf("\r\nSystem Status:\r\n");
+                        printf("  Trigger threshold: %.3f G\r\n", trigger_g);
+                        printf("  WoM count: %d\r\n", act_count);
+                        printf("  HPF: %s\r\n", hpf_enabled ? "ON" : "OFF");
+                        printf("  Mode: %d\r\n", operation_mode);
+                    } else if (strcmp(cmd_buffer, "q") == 0) {
+                        /* query → same as accel */
+                        ADXL355_Data_t data;
+                        ADXL355_Read_Data(&data);
+                        printf("\r\nAccelerometer:\r\n");
+                        printf("  X: %.3f g\r\n", data.x_g);
+                        printf("  Y: %.3f g\r\n", data.y_g);
+                        printf("  Z: %.3f g\r\n", data.z_g);
+                    } else if (strcmp(cmd_buffer, "m") == 0) {
+                        printf("\r\n[CMD] Powering on modem (real hardware)...\r\n");
+                        HAL_StatusTypeDef ret = Modem_PowerOn();
+                        printf("[CMD] Modem_PowerOn returned: %d\r\n", (int)ret);
+                        if (ret == HAL_OK) {
+                            printf("[CMD] Modem ready! Test AT...\r\n");
+                            ret = Modem_SendAT("AT", "OK", 1000);
+                            printf("[CMD] Modem_SendAT(AT) returned: %d\r\n", (int)ret);
+                        }
+                    } else if (strcmp(cmd_buffer, "l") == 0) {
+                        /* list files on SD */
+                        printf("\r\nSD Card files:\r\n");
+                        DIR dir;
+                        FILINFO fno;
+                        if (f_opendir(&dir, "") == FR_OK) {
+                            while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+                                printf("  %s (%lu bytes)\r\n", fno.fname, (unsigned long)fno.fsize);
+                            }
+                            f_closedir(&dir);
+                        } else {
+                            printf("  (cannot open root directory)\r\n");
+                        }
+                    } else if (strcmp(cmd_buffer, "r") == 0) {
+                        /* range/trigger config */
+                        printf("\r\nCurrent config:\r\n");
+                        printf("  Range: %s\r\n", range_str[cur_range_idx]);
+                        printf("  ODR: %s\r\n", odr_str[cur_odr_idx]);
+                        printf("  Trigger: %.3f G\r\n", trigger_g);
+                        printf("  HPF: %s\r\n", hpf_enabled ? "ON" : "OFF");
+                        printf("  ACT_COUNT: %d\r\n", act_count);
+                        printf("  Operation mode: %d\r\n", operation_mode);
+                    } else if (strcmp(cmd_buffer, "o") == 0) {
+                        /* odr setting */
+                        printf("\r\nODR options:\r\n");
+                        printf("  4000  - 4000 Hz\r\n");
+                        printf("  2000  - 2000 Hz\r\n");
+                        printf("  1000  - 1000 Hz\r\n");
+                        printf("  500   - 500 Hz\r\n");
+                        printf("  250   - 250 Hz\r\n");
+                        printf("  125   - 125 Hz (current default)\r\n");
+                        printf("  62    - 62.5 Hz\r\n");
+                        printf("  31    - 31.25 Hz\r\n");
+                        printf("  Current ODR: %s\r\n", odr_str[cur_odr_idx]);
+                    } else if (strcmp(cmd_buffer, "sensstat") == 0) {
+                        uint8_t status = ADXL355_Read_Status();
+                        printf("\r\nADXL355 STATUS (0x04): 0x%02X\r\n", status);
+                        printf("  DRDY    (bit 0): %d\r\n", (status >> 0) & 1);
+                        printf("  INACT   (bit 1): %d\r\n", (status >> 1) & 1);
+                        printf("  ACT     (bit 2): %d\r\n", (status >> 2) & 1);
+                        printf("  FIFO_OVR(bit 3): %d\r\n", (status >> 3) & 1);
+                        printf("  AWAKE   (bit 5): %d\r\n", (status >> 5) & 1);
+                        printf("  NVM_BUSY(bit 7): %d\r\n", (status >> 7) & 1);
+                    } else if (strncmp(cmd_buffer, "readreg ", 8) == 0) {
+                        char *end;
+                        unsigned long reg = strtoul(cmd_buffer + 8, &end, 16);
+                        (void)end;
+                        if (reg <= 0x2F) {
+                            uint8_t val = ADXL355_Read_Reg((uint8_t)reg);
+                            printf("\r\nADXL355[0x%02X] = 0x%02X (%u)\r\n",
+                                   (unsigned)reg, (unsigned)val, (unsigned)val);
+                        } else {
+                            printf("\r\nInvalid register (must be 0x00-0x2F)\r\n");
+                        }
                     } else {
                         printf("\r\nUnknown command: %s\r\n", cmd_buffer);
                     }
@@ -326,13 +394,10 @@ void StartControlTask(void *argument) {
                 }
                 cmd_index = 0;
             } else if (rx_byte >= 32 && rx_byte <= 126 && cmd_index < (CMD_BUFFER_SIZE - 1)) {
-                // Printable character
                 cmd_buffer[cmd_index++] = rx_byte;
             }
-            // Ignore other characters (like delete, etc.) for simplicity
-        } while (got_byte && cmd_index < (CMD_BUFFER_SIZE - 1));
-        poll_loops++;
-        // Small delay to prevent CPU hogging if no data
+        }
+        /* Small delay to prevent CPU hogging */
         osDelay(1);
     }
 }

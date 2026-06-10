@@ -1,5 +1,6 @@
 #include "adxl355.h"
 #include "main.h"
+#include "cmsis_os.h"
 #include <stdio.h>
 
 // Global handle for SPI (must be defined in main.c)
@@ -67,22 +68,18 @@ uint8_t ADXL355_Init(SPI_HandleTypeDef *hspi) {
         return 0; // Error
     }
     
-    // 3. Configure Filter (Default ODR = 125Hz -> 0x05)
-    ADXL355_Write_Reg(ADXL355_FILTER, 0x05);
+    // 3. Configure Filter (Default ODR = 125Hz -> 0x15)
+    // 0x15 = 0b00010101: bits 6:4=000 HPF OFF, bit 3=0 ACT_HPF OFF, bits 2:0=101 ODR=125Hz
+    // Activity detection uses X+Y only (ACT_EN=0x03) to avoid 1g gravity false triggers on Z
+    ADXL355_Write_Reg(ADXL355_FILTER, 0x15);
     
     // 4. Power Control (Measurement Mode)
     // Standby = 0 (Bit 0) -> Measurement Mode
     ADXL355_Write_Reg(ADXL355_POWER_CTL, 0x00);
     
-    // 5. Configure Interrupt Polarity (Active High for Rising Edge)
-    // Read Range register, Set Bit 6 (INT_POL) = 1
-    // Range bits (1:0) default is usually 01 (2g). 
-    // We should preserve existing range settings.
-    uint8_t range_reg = ADXL355_Read_Reg(ADXL355_RANGE);
-    range_reg |= 0x40; // Set Bit 6
-    ADXL355_Write_Reg(ADXL355_RANGE, range_reg);
-
-    // Set default range to 2g explicitly
+    // 5. Set default range to 2g explicitly
+    // (RANGE register default after reset has bits 1:0 = 00 = ±2g)
+    // Bit 6 is reserved (must be 0) per datasheet.
     ADXL355_Set_Range(ADXL355_RANGE_2G);
 
     return 1; // Success
@@ -92,11 +89,11 @@ void ADXL355_Set_Range(ADXL355_Range_t range) {
     // 1. Enter Standby Mode
     ADXL355_Write_Reg(ADXL355_POWER_CTL, 0x01);
 
-    // 2. Configure Range
+    // 2. Configure Range (ADXL355 datasheet)
     // Bits 1:0 determine range.
-    // 01 = +/- 2g
-    // 10 = +/- 4g
-    // 11 = +/- 8g
+    // 00 = +/- 2g
+    // 01 = +/- 4g
+    // 10 = +/- 8g
     uint8_t range_reg = ADXL355_Read_Reg(ADXL355_RANGE);
     range_reg &= 0xFC; // Clear bits 1:0
     range_reg |= (range & 0x03);
@@ -121,6 +118,15 @@ void ADXL355_Set_Range(ADXL355_Range_t range) {
 
     // 4. Return to Measurement Mode
     ADXL355_Write_Reg(ADXL355_POWER_CTL, 0x00);
+}
+
+float ADXL355_Get_Full_Scale(void) {
+    switch(current_range) {
+        case ADXL355_RANGE_2G: return 2.0f;
+        case ADXL355_RANGE_4G: return 4.0f;
+        case ADXL355_RANGE_8G: return 8.0f;
+        default: return 2.0f;
+    }
 }
 
 void ADXL355_Set_ODR(ADXL355_ODR_t odr) {
@@ -201,19 +207,21 @@ void ADXL355_Config_WakeOnMotion(float threshold_g, uint8_t count) {
     ADXL355_Write_Reg(ADXL355_ACT_COUNT, count);
     
     // 4. Enable Axes (X, Y) in ACT_EN (0x24)
-    // We disable Z (bit 2) to avoid constant triggering from gravity (1G).
+    // HPF is OFF so Z with 1g gravity would trigger continuously.
+    // X+Y only is safe: no DC gravity, any motion above threshold triggers.
+    // Software polling in sensor_task catches Z-motion as fallback.
     ADXL355_Write_Reg(ADXL355_ACT_EN, 0x03); 
     
     // 5. Map Activity Interrupt to INT1
-    // Register 0x2A (INT_MAP): Bit 3 is ACT_EN1 (1 = Activity to INT1)
+    // Register 0x2A (INT_MAP): Bit 3 is ACT_INT1 (0 = route to INT1, 1 = route to INT2)
     uint8_t int_map = ADXL355_Read_Reg(ADXL355_INT_MAP);
-    int_map |= 0x08; // Set bit 3 to enable Activity on INT1
+    int_map &= ~0x08; // Clear bit 3 to route activity to INT1
     ADXL355_Write_Reg(ADXL355_INT_MAP, int_map);
 
-    // 6. Return to Measurement Mode
+    // 7. Return to Measurement Mode
     ADXL355_Write_Reg(ADXL355_POWER_CTL, 0x00);
     
-    // 7. Clear any pending interrupts by reading STATUS
+    // 8. Clear any pending interrupts by reading STATUS
     // Esto asegura que la linea INT1 baje antes de empezar a esperar
     HAL_Delay(10);
     ADXL355_Read_Reg(ADXL355_STATUS);
@@ -345,4 +353,129 @@ int ADXL355_Read_FIFO_Burst(SPI_HandleTypeDef *hspi, ADXL355_Data_t *buffer, uin
         ADXL355_Read_Data(&buffer[i]);
     }
     return count;
+}
+
+// =====================================================================
+// DMA implementation for SPI2 (ADI-ADXL355)
+// STM32F446RE: SPI2_TX = DMA1 Stream 4 Ch 0, SPI2_RX = DMA1 Stream 3 Ch 0
+// =====================================================================
+static DMA_HandleTypeDef hdma_spi2_tx;
+static DMA_HandleTypeDef hdma_spi2_rx;
+static osSemaphoreId_t dma_spi2_sem;
+
+static void adxl355_DMA_Init(void) {
+    static uint8_t initialized = 0;
+    if (initialized) return;
+    initialized = 1;
+
+    __HAL_RCC_DMA1_CLK_ENABLE();
+
+    // TX: DMA1 Stream 4, Channel 0
+    hdma_spi2_tx.Instance = DMA1_Stream4;
+    hdma_spi2_tx.Init.Channel = DMA_CHANNEL_0;
+    hdma_spi2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_spi2_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_spi2_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_spi2_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_spi2_tx.Init.Mode = DMA_NORMAL;
+    hdma_spi2_tx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_spi2_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_spi2_tx) != HAL_OK) {
+        Error_Handler();
+    }
+    __HAL_LINKDMA(adxl_hspi, hdmatx, hdma_spi2_tx);
+
+    // RX: DMA1 Stream 3, Channel 0
+    hdma_spi2_rx.Instance = DMA1_Stream3;
+    hdma_spi2_rx.Init.Channel = DMA_CHANNEL_0;
+    hdma_spi2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_spi2_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_spi2_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_spi2_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi2_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_spi2_rx.Init.Mode = DMA_NORMAL;
+    hdma_spi2_rx.Init.Priority = DMA_PRIORITY_LOW;
+    hdma_spi2_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_spi2_rx) != HAL_OK) {
+        Error_Handler();
+    }
+    __HAL_LINKDMA(adxl_hspi, hdmarx, hdma_spi2_rx);
+
+    // Enable DMA interrupts (priority 5 = low, safe for FreeRTOS)
+    HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+    HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
+
+    // Binary semaphore for task→ISR sync
+    static const osSemaphoreAttr_t sem_attr = { .name = "dma_spi2" };
+    dma_spi2_sem = osSemaphoreNew(1, 0, &sem_attr);
+}
+
+// DMA ISRs
+void DMA1_Stream3_IRQHandler(void) {
+    HAL_DMA_IRQHandler(&hdma_spi2_rx);
+}
+void DMA1_Stream4_IRQHandler(void) {
+    HAL_DMA_IRQHandler(&hdma_spi2_tx);
+}
+
+// SPI full-duplex transfer complete callback (called from DMA ISR chain)
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
+    if (hspi->Instance == SPI2) {
+        osSemaphoreRelease(dma_spi2_sem);
+    }
+}
+
+uint8_t ADXL355_Read_Data_DMA(ADXL355_Data_t *data) {
+    adxl355_DMA_Init();
+
+    uint8_t tx_buf[10] = { (ADXL355_XDATA3 << 1) | 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t rx_buf[10] = {0};
+
+    HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_RESET);
+
+    HAL_StatusTypeDef stat = HAL_SPI_TransmitReceive_DMA(adxl_hspi, tx_buf, rx_buf, 10);
+    if (stat != HAL_OK) {
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        return 0;
+    }
+
+    // Wait for DMA completion (binary semaphore released by HAL_SPI_TxRxCpltCallback)
+    // 10ms timeout = ~2000 bytes @ 21MHz, plenty for 10 bytes
+    if (osSemaphoreAcquire(dma_spi2_sem, 10) != osOK) {
+        HAL_SPI_DMAStop(adxl_hspi);
+        HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+        return 0;
+    }
+
+    HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
+
+    // Parse: rx_buf[0] is garbage (received during command byte), [1..9] = XDATA3..ZDATA1
+    int32_t x = ((int32_t)rx_buf[1] << 12) | ((int32_t)rx_buf[2] << 4) | ((int32_t)rx_buf[3] >> 4);
+    int32_t y = ((int32_t)rx_buf[4] << 12) | ((int32_t)rx_buf[5] << 4) | ((int32_t)rx_buf[6] >> 4);
+    int32_t z = ((int32_t)rx_buf[7] << 12) | ((int32_t)rx_buf[8] << 4) | ((int32_t)rx_buf[9] >> 4);
+
+    /* Sign-extend 20-bit two's complement */
+    if (x & 0x80000) x |= 0xFFF00000;
+    if (y & 0x80000) y |= 0xFFF00000;
+    if (z & 0x80000) z |= 0xFFF00000;
+
+    data->x = x;
+    data->y = y;
+    data->z = z;
+
+    data->x_g = (float)x / current_sensitivity;
+    data->y_g = (float)y / current_sensitivity;
+    data->z_g = (float)z / current_sensitivity;
+
+    if (adxl_offsets_valid) {
+        data->x_g -= adxl_offset_x_g;
+        data->y_g -= adxl_offset_y_g;
+        data->z_g -= adxl_offset_z_g;
+    }
+
+    data->timestamp = HAL_GetTick();
+    return 1;
 }

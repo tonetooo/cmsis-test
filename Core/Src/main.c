@@ -62,11 +62,11 @@ FRESULT fres;
 const char* range_str[] = {"+/- 2g", "+/- 4g", "+/- 8g"};
 const char* odr_str[] = {"?", "4000Hz", "2000Hz", "1000Hz", "500Hz", "250Hz", "125Hz", "62.5Hz", "31.25Hz"};
 int cur_range_idx = 0;
-int cur_odr_idx = 6;
-float trigger_g = 0.02f;
-uint8_t hpf_enabled = 0;
-uint8_t act_count = 5;
-uint8_t operation_mode = 2;
+    int cur_odr_idx = 6;
+    float trigger_g = 0.10f;
+    uint8_t hpf_enabled = 1;
+    uint8_t act_count = 5;
+    uint8_t operation_mode = 2;
 volatile uint8_t g_modem_abort_enabled = 0;
 osMutexId_t uart_mutexHandle = NULL;
 
@@ -180,18 +180,21 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_USART2_UART_Init();
+  USART2_Start_IT();
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  // Modem_Init(&huart1);  // COMMENTED OUT: software isolation test for SD card
+  Modem_Init(&huart1);  // Initialize modem UART handle (needed for modem_task)
   printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
 
-  // if (ADXL355_Init(&hspi2)) {  // COMMENTED OUT: software isolation test for SD card
-  //     printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
-  //     ADXL355_LevelToZero();
-  // } else {
-  //     printf("[SENSOR] ADXL355 Initialization Failed\r\n");
-  // }
+  if (ADXL355_Init(&hspi2)) {
+      printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
+      ADXL355_LevelToZero();
+      ADXL355_Config_WakeOnMotion(trigger_g, act_count);
+      printf("[SENSOR] Wake-on-Motion configured: %.3f G, count=%d\r\n", trigger_g, act_count);
+  } else {
+      printf("[SENSOR] ADXL355 Initialization Failed\r\n");
+  }
 
   if (sd_mount() == 0) {
       fres = FR_OK;

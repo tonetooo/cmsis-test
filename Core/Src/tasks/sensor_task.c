@@ -26,24 +26,48 @@ void StartSensorTask(void *argument) {
     uint32_t last_print = 0;
     printf("[SENSOR] Task started (prio=High)\r\n");
     for (;;) {
-        /* Esperar trigger de movimiento con timeout de 5s para heartbeat */
-        uint32_t evt_flags = osEventFlagsWait(sensor_event_flagsHandle,
-                         EVT_MOTION_DETECTED,
-                         osFlagsWaitAny | osFlagsNoClear,
-                         5000);
+        /* Wait for motion trigger: EXTI interrupt + software polling fallback */
+        osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+
+        uint32_t motion_detected = 0;
+        uint32_t evt_flags = 0;
+        for (int heartbeat = 50; heartbeat > 0 && !motion_detected; heartbeat--) {
+            /* Check hardware interrupt event flag (100ms timeout) */
+            evt_flags = osEventFlagsWait(sensor_event_flagsHandle,
+                             EVT_MOTION_DETECTED,
+                             osFlagsWaitAny,
+                             100);
+            if (evt_flags & EVT_MOTION_DETECTED) {
+                motion_detected = 1;
+                break;
+            }
+            /* Software polling fallback: read sensor, check all 3 axes */
+            ADXL355_Data_t poll_data;
+            ADXL355_Read_Data(&poll_data);
+            float poll_mag = sqrtf(poll_data.x_g * poll_data.x_g +
+                                   poll_data.y_g * poll_data.y_g +
+                                   poll_data.z_g * poll_data.z_g);
+             if (poll_mag > trigger_g * 2.5f) {
+                motion_detected = 1;
+                printf("[SENSOR] Motion detected via polling (%.3f G > %.3f G)\r\n",
+                       poll_mag, trigger_g);
+                break;
+            }
+            /* Heartbeat each ~1s (10 iterations) */
+            if (heartbeat % 10 == 0) {
+                printf("[SENSOR] Waiting for motion... (%d)\r\n", (heartbeat / 10) - 1);
+            }
+        }
+
         /* If sdtest is active, ignore motion events and keep waiting */
         if (sdbg_abort_acq) {
-            osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
-            printf("[SENSOR] Waiting for motion...\r\n");
             continue;
         }
 
-        if (!(evt_flags & EVT_MOTION_DETECTED)) {
-            printf("[SENSOR] Waiting for motion...\r\n");
+        if (!motion_detected) {
             continue;
         }
-        /* Now clear the flag */
-        osEventFlagsClear(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+        /* Flag was auto-cleared by osEventFlagsWait (no osFlagsNoClear) */
         printf("[SENSOR] Motion detected, starting acquisition\r\n");
         acquiring = 1;
         acq_start = osKernelGetTickCount();
@@ -52,6 +76,7 @@ void StartSensorTask(void *argument) {
         prev_mag = -1.0f;
         read_index = 0;
         last_print = 0;
+        printf("[SENSOR] Entering acquisition loop\r\n");
         /* Loop de adquisicion (max 15 minutos = 900000 ms) */
         while (acquiring &&
                (osKernelGetTickCount() - acq_start) < 900000) {
@@ -60,9 +85,10 @@ void StartSensorTask(void *argument) {
                 acquiring = 0;
                 break;
             }
-            ADXL355_Read_Data(&data);
+            ADXL355_Read_Data_DMA(&data);
             float current_mag = sqrtf(data.x_g * data.x_g +
-                                      data.y_g * data.y_g);
+                                       data.y_g * data.y_g +
+                                       data.z_g * data.z_g);
             /* Log cada ~125ms */
             uint32_t now = osKernelGetTickCount();
             if (now - last_print >= 125) {
@@ -81,42 +107,42 @@ void StartSensorTask(void *argument) {
             reading.current = 0.0f;
             reading.power = 0.0f;
             osMessageQueuePut(sensor_queueHandle, &reading, 0, 0);
-            /* Settling logic */
-            if (current_mag < trigger_g) {
+            /* Settling logic - delta-based, independiente del offset absoluto */
+            float delta = (prev_mag < 0) ? 0.0f :
+                          fabsf(current_mag - prev_mag);
+            if (delta < static_delta * 2) {
                 if (!in_settling) {
                     in_settling = 1;
                     settling_start = now;
-                    printf("[SENSOR] Settling started (<%.2f G)\r\n",
-                           trigger_g);
-                }
-                float delta = (prev_mag < 0) ? 0.0f :
-                              fabsf(current_mag - prev_mag);
-                if (delta > static_delta) {
-                    settling_start = now;
+                    printf("[SENSOR] Settling started (delta=%.4fG)\r\n", delta);
                 }
                 if ((now - settling_start) > settling_duration &&
                     (now - acq_start) > min_duration) {
-                    printf("[SENSOR] Event finished (%.1f s)\r\n",
-                           (float)(now - acq_start) / 1000.0f);
+                    printf("[SENSOR] Event finished (%.1f s, delta=%.4fG)\r\n",
+                           (float)(now - acq_start) / 1000.0f, delta);
                     acquiring = 0;
                 }
             } else {
                 if (in_settling) {
-                    printf("[SENSOR] New motion, resetting settling\r\n");
+                    printf("[SENSOR] Motion resetting settling (delta=%.4fG)\r\n", delta);
                 }
                 in_settling = 0;
             }
             prev_mag = current_mag;
-            /* Earthquake rejection */
-            if (data.x_g > 2.0f || data.x_g < -2.0f ||
-                data.y_g > 2.0f || data.y_g < -2.0f ||
-                data.z_g > 2.0f || data.z_g < -2.0f) {
-                printf("[SENSOR] Earthquake rejected (>2G)\r\n");
+            /* Earthquake rejection (95% of full scale to avoid noise false-triggers) */
+            float full_scale = ADXL355_Get_Full_Scale();
+            float eq_threshold = full_scale * 0.95f;
+            if (data.x_g > eq_threshold || data.x_g < -eq_threshold ||
+                data.y_g > eq_threshold || data.y_g < -eq_threshold ||
+                data.z_g > eq_threshold || data.z_g < -eq_threshold) {
+                printf("[SENSOR] Earthquake rejected (%.3fG > %.1fG)\r\n",
+                       data.x_g > eq_threshold ? data.x_g : -data.x_g, eq_threshold);
                 acquiring = 0;
             }
             read_index++;
             osDelay(10); /* Precisos 10ms */
         }
+        printf("[SENSOR] Acquisition loop exited (acquiring=%d)\r\n", (int)acquiring);
         /* Avisar a modem_task que hay datos disponibles */
         if (!acquiring) {
             osEventFlagsSet(sensor_event_flagsHandle, EVT_ACQSTN_DONE);
