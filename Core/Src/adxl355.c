@@ -3,6 +3,7 @@
 #include "cmsis_os.h"
 #include <stdio.h>
 #include <string.h>
+#include "console.h"
 
 // Global handle for SPI (must be defined in main.c)
 static SPI_HandleTypeDef *adxl_hspi;
@@ -23,8 +24,8 @@ static HAL_StatusTypeDef spi_tx(SPI_HandleTypeDef *hspi, uint8_t *data, uint16_t
         osDelay(1);
     }
     adxl_spi_error_count++;
-    printf("[SPI ERR] TX fail (size=%u, status=%d, total=%lu)\r\n",
-           size, (int)s, (unsigned long)adxl_spi_error_count);
+    CONS_ERR("[SPI ERR] TX fail (size=%u, status=%d, total=%lu)",
+             size, (int)s, (unsigned long)adxl_spi_error_count);
     return s;
 }
 
@@ -37,8 +38,8 @@ static HAL_StatusTypeDef spi_rx(SPI_HandleTypeDef *hspi, uint8_t *data, uint16_t
         osDelay(1);
     }
     adxl_spi_error_count++;
-    printf("[SPI ERR] RX fail (size=%u, status=%d, total=%lu)\r\n",
-           size, (int)s, (unsigned long)adxl_spi_error_count);
+    CONS_ERR("[SPI ERR] RX fail (size=%u, status=%d, total=%lu)",
+             size, (int)s, (unsigned long)adxl_spi_error_count);
     return s;
 }
 
@@ -105,7 +106,7 @@ uint8_t ADXL355_Init(SPI_HandleTypeDef *hspi) {
     }
 
     if (devid_ad != 0xAD || devid_mst != 0x1D || partid != 0xED) {
-        printf("Error: IDs mismatch. AD:0x%02X(Exp:0xAD), MST:0x%02X(Exp:0x1D), PART:0x%02X(Exp:0xED)\r\n", devid_ad, devid_mst, partid);
+        CONS_ERR("Error: IDs mismatch. AD:0x%02X(Exp:0xAD), MST:0x%02X(Exp:0x1D), PART:0x%02X(Exp:0xED)", devid_ad, devid_mst, partid);
         return 0; // Error
     }
     
@@ -269,7 +270,7 @@ void ADXL355_Config_WakeOnMotion(float threshold_g, uint8_t count) {
 }
 
 void ADXL355_LevelToZero(void) {
-    printf("[CAL] Iniciando level-to-zero, mantenga el sensor quieto...\r\n");
+    CONS_INFO("[CAL] Iniciando level-to-zero, mantenga el sensor quieto...");
     HAL_Delay(200);
     const int samples = 512;
     float sum_x = 0.0f;
@@ -290,9 +291,9 @@ void ADXL355_LevelToZero(void) {
     adxl_offset_y_g = avg_y;
     adxl_offset_z_g = avg_z;
     adxl_offsets_valid = 1;
-    printf("[CAL] Promedio en reposo (g): X=%.4f, Y=%.4f, Z=%.4f\r\n", avg_x, avg_y, avg_z);
-    printf("[CAL] Offsets aplicados (g): X=%.4f, Y=%.4f, Z=%.4f\r\n", adxl_offset_x_g, adxl_offset_y_g, adxl_offset_z_g);
-    printf("[CAL] Level-to-zero completado; lecturas futuras se corrigen con estos offsets.\r\n");
+    CONS_INFO("[CAL] Promedio en reposo (g): X=%.4f, Y=%.4f, Z=%.4f", avg_x, avg_y, avg_z);
+    CONS_INFO("[CAL] Offsets aplicados (g): X=%.4f, Y=%.4f, Z=%.4f", adxl_offset_x_g, adxl_offset_y_g, adxl_offset_z_g);
+    CONS_OK("[CAL] Level-to-zero completado; lecturas futuras se corrigen con estos offsets.");
 }
 
 static void ADXL355_Read_Data_Internal(ADXL355_Data_t *data, uint8_t apply_offsets) {
@@ -470,6 +471,10 @@ static void adxl355_DMA_Init(void) {
     // Binary semaphore for task→ISR sync
     static const osSemaphoreAttr_t sem_attr = { .name = "dma_spi2" };
     dma_spi2_sem = osSemaphoreNew(1, 0, &sem_attr);
+    if (dma_spi2_sem == NULL) {
+        /* Heap exhausted — allow retry on next call */
+        initialized = 0;
+    }
 }
 
 // DMA ISRs
@@ -483,7 +488,10 @@ void DMA1_Stream4_IRQHandler(void) {
 // SPI full-duplex transfer complete callback (called from DMA ISR chain)
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI2) {
-        osSemaphoreRelease(dma_spi2_sem);
+        /* Guard: semaphore might not be initialized yet */
+        if (dma_spi2_sem != NULL) {
+            osSemaphoreRelease(dma_spi2_sem);
+        }
     }
 }
 
@@ -503,7 +511,7 @@ uint8_t ADXL355_Read_Data_DMA(ADXL355_Data_t *data) {
 
     // Wait for DMA completion (binary semaphore released by HAL_SPI_TxRxCpltCallback)
     // 10ms timeout = ~2000 bytes @ 21MHz, plenty for 10 bytes
-    if (osSemaphoreAcquire(dma_spi2_sem, 10) != osOK) {
+    if (dma_spi2_sem == NULL || osSemaphoreAcquire(dma_spi2_sem, 10) != osOK) {
         HAL_SPI_DMAStop(adxl_hspi);
         HAL_GPIO_WritePin(ADXL_CS_GPIO_Port, ADXL_CS_Pin, GPIO_PIN_SET);
         return 0;

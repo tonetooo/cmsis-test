@@ -33,19 +33,23 @@
 
 void WDT_Init(void)
 {
+    /* Ensure LSI oscillator is enabled and stable */
+    RCC->CSR |= RCC_CSR_LSION;
+    while (!(RCC->CSR & RCC_CSR_LSIRDY)) { }
+
     /* Enable write access to PR and RLR */
     IWDG->KR = IWDG_KR_WRITE_ACCESS_ENABLE;
 
     /* Wait for PVU to clear (may be set from previous config) */
     while (IWDG->SR & IWDG_SR_PVU) { }
 
-    /* Prescaler = /128 => bit 2:0 = 5 */
-    IWDG->PR = 5;
+    /* Prescaler = /256 => bit 2:0 = 6 (~32s at 32 kHz) */
+    IWDG->PR = 6;
 
     /* Wait for RVU to clear */
     while (IWDG->SR & IWDG_SR_RVU) { }
 
-    /* Reload = 4095 (max, gives ~16.4s with /128 at 32 kHz) */
+    /* Reload = 4095 (max, gives ~32.8s with /256 at 32 kHz) */
     IWDG->RLR = 4095;
 
     /* Start IWDG */
