@@ -7,6 +7,7 @@
 #include "tasks.h"
 #include "adxl355.h"
 #include "wdt.h"
+#include "console.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -25,7 +26,7 @@ void StartSensorTask(void *argument) {
     const uint32_t min_duration = 3000;
     uint32_t read_index = 0;
     uint32_t last_print = 0;
-    printf("[SENSOR] Task started (prio=High)\r\n");
+    CONS_INFO("[SENSOR] Task started (prio=High)\r\n");
     for (;;) {
         WDT_Refresh();
         /* Wait for motion trigger: EXTI interrupt + software polling fallback */
@@ -33,6 +34,7 @@ void StartSensorTask(void *argument) {
 
         uint32_t motion_detected = 0;
         uint32_t evt_flags = 0;
+
         for (int heartbeat = 50; heartbeat > 0 && !motion_detected; heartbeat--) {
             /* Check hardware interrupt event flag (100ms timeout) */
             evt_flags = osEventFlagsWait(sensor_event_flagsHandle,
@@ -51,14 +53,14 @@ void StartSensorTask(void *argument) {
                                    poll_data.z_g * poll_data.z_g);
              if (poll_mag > trigger_g * 2.5f) {
                 motion_detected = 1;
-                printf("[SENSOR] Motion detected via polling (%.3f G > %.3f G)\r\n",
-                       poll_mag, trigger_g);
+                CONS_OK("[SENSOR] Motion detected via polling (%.3f G)\r\n",
+                       poll_mag);
                 break;
             }
              /* Heartbeat each ~1s (10 iterations) + pet watchdog */
             if (heartbeat % 10 == 0) {
                 WDT_Refresh();
-                printf("[SENSOR] Waiting for motion... (%d)\r\n", (heartbeat / 10) - 1);
+                CONS("[SENSOR] Waiting for motion... (%d)\r\n", (heartbeat / 10) - 1);
             }
         }
 
@@ -71,7 +73,7 @@ void StartSensorTask(void *argument) {
             continue;
         }
         /* Flag was auto-cleared by osEventFlagsWait (no osFlagsNoClear) */
-        printf("[SENSOR] Motion detected, starting acquisition\r\n");
+        CONS_OK("[SENSOR] Motion detected, starting acquisition\r\n");
         acquiring = 1;
         acq_start = osKernelGetTickCount();
         settling_start = 0;
@@ -79,12 +81,12 @@ void StartSensorTask(void *argument) {
         prev_mag = -1.0f;
         read_index = 0;
         last_print = 0;
-        printf("[SENSOR] Entering acquisition loop\r\n");
+        CONS_INFO("[SENSOR] Entering acquisition loop\r\n");
         /* Loop de adquisicion (max 15 minutos = 900000 ms) */
         while (acquiring &&
                (osKernelGetTickCount() - acq_start) < 900000) {
             if (sdbg_abort_acq) {
-                printf("[SENSOR] Acquisition aborted by sdtest\r\n");
+                CONS_WARN("[SENSOR] Acquisition aborted by sdtest\r\n");
                 acquiring = 0;
                 break;
             }
@@ -95,7 +97,7 @@ void StartSensorTask(void *argument) {
             /* Log cada ~125ms */
             uint32_t now = osKernelGetTickCount();
             if (now - last_print >= 125) {
-                printf("[SENSOR] X:%.3f Y:%.3f Z:%.3f g | T:%.1fs\r\n",
+                CONS("[SENSOR] X:%.3f Y:%.3f Z:%.3f g | T:%.1fs\r\n",
                        data.x_g, data.y_g, data.z_g,
                        (float)(now - acq_start) / 1000.0f);
                 last_print = now;
@@ -117,17 +119,17 @@ void StartSensorTask(void *argument) {
                 if (!in_settling) {
                     in_settling = 1;
                     settling_start = now;
-                    printf("[SENSOR] Settling started (delta=%.4fG)\r\n", delta);
+                    CONS_INFO("[SENSOR] Settling started (delta=%.4fG)\r\n", delta);
                 }
                 if ((now - settling_start) > settling_duration &&
                     (now - acq_start) > min_duration) {
-                    printf("[SENSOR] Event finished (%.1f s, delta=%.4fG)\r\n",
+                    CONS_OK("[SENSOR] Event finished (%.1f s, delta=%.4fG)\r\n",
                            (float)(now - acq_start) / 1000.0f, delta);
                     acquiring = 0;
                 }
             } else {
                 if (in_settling) {
-                    printf("[SENSOR] Motion resetting settling (delta=%.4fG)\r\n", delta);
+                    CONS_WARN("[SENSOR] Motion resetting settling (delta=%.4fG)\r\n", delta);
                 }
                 in_settling = 0;
             }
@@ -138,7 +140,7 @@ void StartSensorTask(void *argument) {
             if (data.x_g > eq_threshold || data.x_g < -eq_threshold ||
                 data.y_g > eq_threshold || data.y_g < -eq_threshold ||
                 data.z_g > eq_threshold || data.z_g < -eq_threshold) {
-                printf("[SENSOR] Earthquake rejected (%.3fG > %.1fG)\r\n",
+                CONS_ERR("[SENSOR] Earthquake rejected (%.3fG > %.1fG)\r\n",
                        data.x_g > eq_threshold ? data.x_g : -data.x_g, eq_threshold);
                 acquiring = 0;
             }
@@ -146,7 +148,7 @@ void StartSensorTask(void *argument) {
             osDelay(10); /* Precisos 10ms */
             WDT_Refresh();
         }
-        printf("[SENSOR] Acquisition loop exited (acquiring=%d)\r\n", (int)acquiring);
+        CONS_INFO("[SENSOR] Acquisition loop exited (acquiring=%d)\r\n", (int)acquiring);
         /* Avisar a modem_task que hay datos disponibles */
         if (!acquiring) {
             osEventFlagsSet(sensor_event_flagsHandle, EVT_ACQSTN_DONE);
