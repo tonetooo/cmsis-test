@@ -13,8 +13,8 @@ from datetime import date, timedelta
 from copy import copy
 import os
 
-SRC = "creador gantt/GANTT 2025.xlsx"
-DST = "creador gantt/GANTT 2026.xlsx"
+SRC = "../creador gantt/GANTT 2025.xlsx"
+DST = "../creador gantt/GANTT 2026.xlsx"
 
 # ── Colours ──────────────────────────────────────────────────────────────
 GREEN      = "70AD47"
