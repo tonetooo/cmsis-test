@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "console.h"
 #include "cmsis_os.h"
 #include "spi.h"
 #include "usart.h"
@@ -29,6 +30,7 @@
 #include "adxl355.h"
 #include "ff.h"
 #include "quectel_drive.h"
+#include "wdt.h"
 #include "tasks.h"
 #include <stdio.h>
 #include <string.h>
@@ -62,11 +64,11 @@ FRESULT fres;
 const char* range_str[] = {"+/- 2g", "+/- 4g", "+/- 8g"};
 const char* odr_str[] = {"?", "4000Hz", "2000Hz", "1000Hz", "500Hz", "250Hz", "125Hz", "62.5Hz", "31.25Hz"};
 int cur_range_idx = 0;
-int cur_odr_idx = 6;
-float trigger_g = 0.02f;
-uint8_t hpf_enabled = 0;
-uint8_t act_count = 5;
-uint8_t operation_mode = 2;
+    int cur_odr_idx = 6;
+    float trigger_g = 0.10f;
+    uint8_t hpf_enabled = 1;
+    uint8_t act_count = 5;
+    uint8_t operation_mode = 2;
 volatile uint8_t g_modem_abort_enabled = 0;
 osMutexId_t uart_mutexHandle = NULL;
 
@@ -101,7 +103,7 @@ void Apply_Remote_Config(const char* key, const char* val) {
             ADXL355_Set_Range(ADXL355_RANGE_8G);
             cur_range_idx = 2;
         }
-        printf("[CFG] RANGE=%s\r\n", range_str[cur_range_idx]);
+        CONS_INFO("[CONFIG] RANGE set to %s", range_str[cur_range_idx]);
     } else if (strcmp(key, "ODR_HZ") == 0) {
         int odr = atoi(val);
         switch (odr) {
@@ -115,12 +117,12 @@ void Apply_Remote_Config(const char* key, const char* val) {
             case 31:   ADXL355_Set_ODR(ADXL355_ODR_31_25HZ); cur_odr_idx = 8; break;
             default: break;
         }
-        if (cur_odr_idx > 0) printf("[CONFIG] ODR set to %s\r\n", odr_str[cur_odr_idx]);
+        if (cur_odr_idx > 0) CONS_INFO("[CONFIG] ODR set to %s", odr_str[cur_odr_idx]);
     } else if (strcmp(key, "TRIGGER_G") == 0) {
         float t = atof(val);
         if (t > 0.0f) {
             trigger_g = t;
-            printf("[CFG] TRIG=%.2fG\r\n", trigger_g);
+            CONS_INFO("[CONFIG] Trigger set to %.2f G", trigger_g);
         }
     } else if (strcmp(key, "HPF") == 0) {
         uint8_t enable = 0;
@@ -128,21 +130,21 @@ void Apply_Remote_Config(const char* key, const char* val) {
         else if (strcasecmp(val, "OFF") == 0 || strcmp(val, "0") == 0) enable = 0;
         hpf_enabled = enable;
         ADXL355_Set_HPF(hpf_enabled);
-        printf("[CONFIG] HPF %s\r\n", hpf_enabled ? "ON" : "OFF");
+        CONS_INFO("[CONFIG] HPF %s", hpf_enabled ? "ON" : "OFF");
     } else if (strcmp(key, "ACT_COUNT") == 0) {
         int c = atoi(val);
         if (c < 1) c = 1;
         if (c > 255) c = 255;
         act_count = (uint8_t)c;
-        printf("[CONFIG] ACT_COUNT set to %d\r\n", c);
+        CONS_INFO("[CONFIG] ACT_COUNT set to %d", c);
     } else if (strcmp(key, "OPERATION_MODE") == 0 || strcmp(key, "MODE") == 0) {
         int m = atoi(val);
         if (m == 1 || m == 2) {
             operation_mode = (uint8_t)m;
-            printf("[CONFIG] OPERATION_MODE=%d\r\n", m);
+            CONS_INFO("[CONFIG] OPERATION_MODE=%d", m);
         } else {
             operation_mode = 2;
-            printf("[CONFIG] OPERATION_MODE invalid, forcing=2\r\n");
+            CONS_WARN("[CONFIG] OPERATION_MODE invalid, forcing=2");
         }
     }
 }
@@ -180,21 +182,23 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_USART2_UART_Init();
+  USART2_Start_IT();
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  printf("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---\r\n");
+  WDT_Init();
+  CONS("[WDT] IWDG started (~33s timeout)");
+  Modem_Init(&huart1);  // Initialize modem UART handle (needed for modem_task)
+  CONS("\r\n--- AWTAS INITIALIZING (AUTONOMOUS WIRELESS TRIAXIAL ADQUISITION SYSTEM) ---");
 
   if (ADXL355_Init(&hspi2)) {
-      printf("[SENSOR] ADXL355 Initialized Successfully\r\n");
+      CONS_OK("[SENSOR] ADXL355 Initialized Successfully");
       ADXL355_LevelToZero();
-      ADXL355_Config_WakeOnMotion(trigger_g, 5);  // 0.020G threshold, 5 consecutive samples
-      printf("[SENSOR] Wake-on-motion configured: threshold=%.3fG\r\n", trigger_g);
+      ADXL355_Config_WakeOnMotion(trigger_g, act_count);
+      CONS_INFO("[SENSOR] Wake-on-Motion configured: %.3f G, count=%d", trigger_g, act_count);
   } else {
-      printf("[SENSOR] ADXL355 Initialization Failed\r\n");
+      CONS_ERR("[SENSOR] ADXL355 Initialization Failed");
   }
-
-  Modem_Init(&huart1);
 
   if (sd_mount() == 0) {
       fres = FR_OK;
@@ -203,9 +207,9 @@ int main(void)
   }
 
 #ifdef ENABLE_TESTS
-  printf("\r\n*** TEST MODE: Running test suite (ENABLE_TESTS defined) ***\r\n");
+  CONS("\r\n*** TEST MODE: Running test suite (ENABLE_TESTS defined) ***");
   run_test_suite();
-  printf("\r\n*** TEST MODE: Halting. Power-cycle to exit. ***\r\n");
+  CONS("\r\n*** TEST MODE: Halting. Power-cycle to exit. ***");
   while (1);
 #endif
 

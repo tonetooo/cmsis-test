@@ -992,22 +992,3 @@ HAL_StatusTypeDef Modem_DownloadConfig(char* out_buffer, uint16_t out_size) {
     Modem_PowerOff();
     return (keys > 0) ? HAL_OK : HAL_ERROR;
 }
-
-int8_t Modem_GetSignalQuality(void) {
-    extern char modem_rx_buffer[];
-    int8_t rssi = 99;
-
-    memset(modem_rx_buffer, 0, MODEM_BUFFER_SIZE);
-    if (Modem_SendAT("AT+CSQ", "+CSQ:", 1000) == HAL_OK) {
-        char* p = strstr(modem_rx_buffer, "+CSQ:");
-        if (p) {
-            p += 5;
-            while(*p == ' ') p++;
-            int rssi_val = 99;
-            if (sscanf(p, "%d", &rssi_val) >= 1) {
-                rssi = (int8_t)rssi_val;
-            }
-        }
-    }
-    return rssi;
-}

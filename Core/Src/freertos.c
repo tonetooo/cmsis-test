@@ -22,6 +22,7 @@
 #include "tasks.h"
 #include "main.h"
 #include "cmsis_os.h"
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -58,21 +59,21 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t sensor_taskHandle;
 const osThreadAttr_t sensor_task_attributes = {
   .name = "sensor_task",
-  .stack_size = 256 * 4,
+  .stack_size = 512 * 4,   /* +100% margin for printf(%f) ~800B stack usage */
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for modem_task */
 osThreadId_t modem_taskHandle;
 const osThreadAttr_t modem_task_attributes = {
   .name = "modem_task",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,  /* +100% margin for UploadFile large locals (url+host+path+header[640]+buf[HTTP_CHUNK_SIZE]) */
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for file_task */
 osThreadId_t file_taskHandle;
 const osThreadAttr_t file_task_attributes = {
   .name = "file_task",
-  .stack_size = 256 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for control_task */
@@ -223,6 +224,27 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* Stack overflow hook called by FreeRTOS when configCHECK_FOR_STACK_OVERFLOW=2 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    /* Disable interrupts and print diagnostic */
+    portDISABLE_INTERRUPTS();
+    printf("\r\n[FATAL] STACK OVERFLOW in task: %s\r\n", pcTaskName);
+    for (;;) {
+        /* Wait for debugger or WDT reset */
+    }
+}
+
+/* Malloc failure hook */
+void vApplicationMallocFailedHook(void)
+{
+    portDISABLE_INTERRUPTS();
+    printf("\r\n[FATAL] MALLOC FAILED (heap exhausted)\r\n");
+    for (;;) {
+        /* Wait for debugger or WDT reset */
+    }
+}
 
 /* USER CODE END Application */
 
