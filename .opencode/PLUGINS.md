@@ -1,5 +1,9 @@
 # HERMES-A1 — OpenCode Plugins & Config
 
+> **Config files incluidos en el repo:**  
+> `opencode/` contiene TODOS los archivos de configuración de OpenCode listos para copiar a `~/.config/opencode/`.  
+> Ver `opencode/README.md` para instrucciones de instalación en el PC local.
+
 ## Contexto
 
 Este repositorio (`cmsis-test`) contiene el firmware STM32F446RE para el adquisidor de datos **HERMES-A1 (AWTAS)** con módem Quectel EC25. El desarrollo se realiza desde dos PCs:
