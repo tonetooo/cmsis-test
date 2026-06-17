@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
+  "agents": {
+    "sisyphus": {
+      "model": "opencode/big-pickle",
+      "temperature": 0.2,
+      "reasoningEffort": "high",
+      "maxTokens": 64000
+    },
+    "oracle": {
+      "model": "opencode/big-pickle",
+      "temperature": 0.1
+    },
+    "librarian": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.1
+    },
+    "explore": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.1
+    },
+    "multimodal-looker": {
+      "model": "google/gemini-2.5-flash"
+    },
+    "prometheus": {
+      "model": "opencode/big-pickle",
+      "temperature": 0.2,
+      "reasoningEffort": "high"
+    },
+    "metis": {
+      "model": "opencode/deepseek-v4-flash-free",
+      "temperature": 0.2
+    },
+    "momus": {
+      "model": "opencode/deepseek-v4-flash-free",
+      "temperature": 0.1
+    },
+    "atlas": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.2
+    },
+    "sisyphus-junior": {
+      "model": "opencode/deepseek-v4-flash-free",
+      "temperature": 0.2
+    }
+  },
+  "categories": {
+    "quick": {
+      "model": "opencode/deepseek-v4-flash-free"
+    },
+    "deep": {
+      "model": "opencode/big-pickle"
+    },
+    "visual-engineering": {
+      "model": "opencode/big-pickle"
+    },
+    "writing": {
+      "model": "opencode/big-pickle"
+    },
+    "qa": {
+      "model": "google/gemini-2.5-flash"
+    }
+  }
+}

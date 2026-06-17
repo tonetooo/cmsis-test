@@ -11,3 +11,5 @@
 *.bin
 *.map
 vaulted_codes/
+credentials.json
+*.key

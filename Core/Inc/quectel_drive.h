@@ -7,7 +7,7 @@
 
 /* Configuración del Módem */
 #define MODEM_BUFFER_SIZE 1024
-#define HTTP_CHUNK_SIZE   1024
+#define HTTP_CHUNK_SIZE   512   /* Reducido de 1024 para aliviar stack de modem_task (2048→4096B) */
 
 typedef enum {
     MODEM_STATE_OFF,

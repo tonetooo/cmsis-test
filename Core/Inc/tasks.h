@@ -35,6 +35,11 @@ void StartControlTask(void *argument);
 /* Shared filename for upload pipeline */
 extern char latest_filename[32];
 
+/* RAM upload buffer — file_task reads CSV into this after closing.
+ * modem_task uploads from here instead of re-reading SD (avoids brown-out data loss). */
+extern uint8_t *upload_buf;
+extern uint32_t upload_buf_size;
+
 /* Abort flag — set by sdtest to force sensor task out of acquisition */
 extern volatile uint8_t sdbg_abort_acq;
 
@@ -48,5 +53,19 @@ typedef struct {
     float current;
     float power;
 } SensorReading_t;
+
+/* Compact binary format for RAM upload (28 bytes/sample, no SD dependency).
+ * Backend converts BIN→CSV. Fits 1170 samples in 32KB. */
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_ms;
+    float x_g;
+    float y_g;
+    float z_g;
+    float voltage;
+    float current;
+    float power;
+} BinarySample_t;
+
+#define UPLOAD_BUF_CAPACITY  (32 * 1024)  /* 32KB = 1170 samples × 28 bytes */
 
 #endif /* INC_TASKS_H_ */

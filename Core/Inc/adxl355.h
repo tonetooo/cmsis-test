@@ -45,11 +45,11 @@ typedef struct {
     uint32_t timestamp;
 } ADXL355_Data_t;
 
-// Range Definitions
+// Range Definitions (ADXL355 datasheet: bits 1:0 = 00=±2g, 01=±4g, 10=±8g)
 typedef enum {
-    ADXL355_RANGE_2G = 0x01,
-    ADXL355_RANGE_4G = 0x02,
-    ADXL355_RANGE_8G = 0x03
+    ADXL355_RANGE_2G = 0x00,
+    ADXL355_RANGE_4G = 0x01,
+    ADXL355_RANGE_8G = 0x02
 } ADXL355_Range_t;
 
 // ODR Definitions
@@ -81,5 +81,8 @@ void ADXL355_Set_HPF(uint8_t enable);
 void ADXL355_Read_FIFO(ADXL355_Data_t *buffer, uint8_t count);
 int ADXL355_Read_FIFO_Burst(SPI_HandleTypeDef *hspi, ADXL355_Data_t *buffer, uint8_t count);
 void ADXL355_LevelToZero(void);
+float ADXL355_Get_Full_Scale(void);
+uint8_t ADXL355_Read_Data_DMA(ADXL355_Data_t *data);
+uint32_t ADXL355_Get_SPI_Error_Count(void);
 
 #endif

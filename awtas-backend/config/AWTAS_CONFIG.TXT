@@ -1,0 +1,57 @@
+###########################################################
+# AWTAS CONFIG - Archivo de configuración remota del sensor
+#
+# Formato general: CLAVE=VALOR (una por línea)
+# Líneas que NO comienzan con RANGE=, ODR_HZ=, TRIGGER_G=,
+# HPF=, ACT_COUNT=, FILE_MANUAL= o FILE_AUTO= son ignoradas por el firmware.
+#
+# RANGE -> Rango del ADXL355 en g
+#   RANGE=2  -> ±2g (máxima resolución, saturación más rápida)
+#   RANGE=4  -> ±4g
+#   RANGE=8  -> ±8g (menor resolución, acepta aceleraciones grandes)
+#
+# ODR_HZ -> Frecuencia de muestreo (Output Data Rate) del ADXL355
+#   Valores válidos aproximados:
+#   4000, 2000, 1000, 500, 250, 125, 62, 31
+#   (62 ≈ 62.5Hz, 31 ≈ 31.25Hz internamente)
+#
+# TRIGGER_G -> Umbral en g para el modo Wake-on-Motion
+#   Ejemplo: TRIGGER_G=0.50  → se arma interrupción cuando |aceleración| supera 0.5g.
+#   Valores mayores → más difícil disparar por movimientos pequeños.
+#
+# HPF -> High-Pass Filter (filtro pasa-altos) del ADXL355
+#   HPF=ON  -> Elimina la componente estática (gravedad/inclinación).
+#             Útil para que el trigger dependa de cambios dinámicos,
+#             no de la posición fija del sensor.
+#   HPF=OFF -> Se ve la gravedad completa. Si el sensor está inclinado,
+#              puede superar el TRIGGER_G solo por la inclinación.
+#
+# ACT_COUNT -> Número de muestras consecutivas sobre el umbral
+#   Controla cuántos samples seguidos deben pasar TRIGGER_G para
+#   considerar que hay movimiento (anti-ruido).
+#
+# OPERATION_MODE -> Selección del modo de operación del equipo
+#   OPERATION_MODE=1  -> Modo 1 (Manual / UART):
+#                        Control desde PC por menú serie, sin FSM autónoma.
+#   OPERATION_MODE=2  -> Modo 2 (Autónomo / FSM):
+#                        El equipo funciona de forma automática, usando cola
+#                        de archivos (QUEUE.TXT), temporizadores y bajo consumo.
+#
+# FILE_MANUAL -> formato de archivo para el modo manual (tecla 'l' por UART)
+#   FILE_MANUAL=MAT -> genera archivos .MAT (recomendado para análisis en MATLAB)
+#   FILE_MANUAL=CSV -> genera archivos .CSV compatibles con Excel
+#
+# FILE_AUTO -> formato de archivo para el modo autónomo (FSM e interrupción 'i')
+#   FILE_AUTO=MAT   -> genera archivos .MAT (por defecto)
+#   FILE_AUTO=CSV   -> genera archivos .CSV
+#
+# Puedes modificar los valores de abajo sin tocar estos comentarios.
+###########################################################
+RANGE=2
+ODR_HZ=125
+TRIGGER_G=0.5
+HPF=OFF
+ACT_COUNT=5
+OPERATION_MODE=2
+FILE_MANUAL=CSV
+FILE_AUTO=CSV

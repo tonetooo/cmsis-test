@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
+  "agents": {
+    "sisyphus": {
+      "model": "opencode/claude-sonnet-4-6",
+      "temperature": 0.2,
+      "reasoningEffort": "high",
+      "maxTokens": 64000
+    },
+    "oracle": {
+      "model": "opencode/claude-opus-4-7",
+      "temperature": 0.1
+    },
+    "librarian": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.1
+    },
+    "explore": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.1
+    },
+    "multimodal-looker": {
+      "model": "google/gemini-2.5-flash"
+    },
+    "prometheus": {
+      "model": "opencode/claude-sonnet-4-6",
+      "temperature": 0.2,
+      "reasoningEffort": "high"
+    },
+    "metis": {
+      "model": "opencode/deepseek-v4-flash",
+      "temperature": 0.2
+    },
+    "momus": {
+      "model": "opencode/deepseek-v4-flash",
+      "temperature": 0.1
+    },
+    "atlas": {
+      "model": "google/gemini-2.5-flash",
+      "temperature": 0.2
+    },
+    "sisyphus-junior": {
+      "model": "opencode/deepseek-v4-flash",
+      "temperature": 0.2
+    }
+  },
+  "categories": {
+    "quick": { "model": "opencode/deepseek-v4-flash" },
+    "deep": { "model": "opencode/claude-sonnet-4-6" },
+    "visual-engineering": { "model": "opencode/claude-sonnet-4-6" },
+    "writing": { "model": "opencode/claude-sonnet-4-6" },
+    "qa": { "model": "google/gemini-2.5-flash" }
+  }
+}

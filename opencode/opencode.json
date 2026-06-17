@@ -1,0 +1,45 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-supermemory",
+    "oh-my-openagent",
+    "@tarquinen/opencode-dcp",
+    "@nick-vi/opencode-type-inject",
+    "opencode-mempalace",
+    "opencode-pty",
+    "@zenobius/opencode-skillful",
+    "opencode-background-agents",
+    "opencode-websearch-cited",
+    "./plugins/model-router",
+    "./plugins/token-goat.ts",
+    "opencode-raven",
+    "opencode-dux",
+    "@mohak34/opencode-notifier"
+  ],
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "gh_grep": {
+      "type": "remote",
+      "url": "https://mcp.grep.app"
+    },
+    "codebase-memory-mcp": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "C:\\Users\\toneto\\.local\\bin\\codebase-memory-mcp.exe"
+      ]
+    },
+    "mempalace": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "python",
+        "-m",
+        "mempalace.mcp_server"
+      ]
+    }
+  }
+}
