@@ -167,7 +167,23 @@ int main(void)
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
+  #include "wdt.h"
+
   /* USER CODE BEGIN Init */
+
+  /* Check and log reset reason */
+  ResetReason reset_reason = WDT_GetResetReason();
+  if (reset_reason != RESET_REASON_NONE) {
+      CONS_INFO("[RESET] Reset reason: 0x%08X", reset_reason);
+      if (reset_reason & RESET_REASON_POWER) CONS_INFO("[RESET] Power-on reset");
+      if (reset_reason & RESET_REASON_PIN) CONS_INFO("[RESET] Pin reset (NRST)");
+      if (reset_reason & RESET_REASON_BOR) CONS_INFO("[RESET] Brown-out reset");
+      if (reset_reason & RESET_REASON_SFTR) CONS_INFO("[RESET] Software reset");
+      if (reset_reason & RESET_REASON_IWDG) CONS_INFO("[RESET] Independent watchdog reset");
+      if (reset_reason & RESET_REASON_WWDG) CONS_INFO("[RESET] Window watchdog reset");
+      if (reset_reason & RESET_REASON_LOWPOWER) CONS_INFO("[RESET] Low-power reset");
+      WDT_ClearResetFlags();
+  }
 
   /* USER CODE END Init */
 

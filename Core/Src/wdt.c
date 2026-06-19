@@ -26,10 +26,40 @@
 
 #include "wdt.h"
 #include "stm32f4xx_hal.h"   /* for IWDG base addr, register struct */
+#include "stm32f4xx.h"       /* for NVIC_SystemReset */
 
 #define IWDG_KR_WRITE_ACCESS_ENABLE  0x5555UL
 #define IWDG_KR_RELOAD               0xAAAAUL
 #define IWDG_KR_START                0xCCCCUL
+
+/* Get the reset reason from RCC flags */
+ResetReason WDT_GetResetReason(void)
+{
+    ResetReason reason = RESET_REASON_NONE;
+    uint32_t rcc_csr = RCC->CSR;
+
+    if (rcc_csr & RCC_CSR_PORRSTF) reason |= RESET_REASON_POWER;
+    if (rcc_csr & RCC_CSR_PINRSTF) reason |= RESET_REASON_PIN;
+    if (rcc_csr & RCC_CSR_BORRSTF) reason |= RESET_REASON_BOR;
+    if (rcc_csr & RCC_CSR_SFTRSTF) reason |= RESET_REASON_SFTR;
+    if (rcc_csr & RCC_CSR_IWDGRSTF) reason |= RESET_REASON_IWDG;
+    if (rcc_csr & RCC_CSR_WWDGRSTF) reason |= RESET_REASON_WWDG;
+    if (rcc_csr & RCC_CSR_LPWRRSTF) reason |= RESET_REASON_LOWPOWER;
+
+    return reason;
+}
+
+/* Clear reset flags after reading */
+void WDT_ClearResetFlags(void)
+{
+    RCC->CSR |= RCC_CSR_RMVF;
+}
+
+/* System reset using NVIC */
+void WDT_SystemReset(void)
+{
+    NVIC_SystemReset();
+}
 
 void WDT_Init(void)
 {

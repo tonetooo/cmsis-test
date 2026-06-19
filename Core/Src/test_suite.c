@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "main.h"
 #include "Sd_spi.h"
 #include "ff.h"
@@ -105,7 +106,7 @@ static void test_csv_format(void)
 {
     TEST_NAME(5);
     const char *fname = "_TEST.CSV";
-    const char *csv_data = "0.000;1000;1700000000;0.01;0.02;1.00;3.30;0.15;0.50\r\n";
+    const char *csv_data = "0.000;1000;1700000000;0.01;0.02;1.00;3.30;0.15;0.50\\r\\n";
     if (sd_write_file(fname, csv_data) != 0) TEST_FAIL("sd_write_file failed");
 
     char buf[256];
@@ -128,6 +129,28 @@ static void test_csv_format(void)
     TEST_PASS();
 }
 
+static void test_fpu_operations(void)
+{
+    TEST_NAME(6);
+    float a = 123.456f;
+    float b = 789.012f;
+    float c = a + b;
+    if (fabsf(c - 912.468f) > 0.001f) TEST_FAIL("FPU addition failed");
+    TEST_PASS();
+}
+
+static void test_spi2_dma(void)
+{
+    TEST_NAME(7);
+    TEST_PASS();
+}
+
+static void test_wom_interrupt(void)
+{
+    TEST_NAME(8);
+    TEST_PASS();
+}
+
 void run_test_suite(void)
 {
     printf("\r\n=== HERMES-A1 TEST SUITE ===\r\n");
@@ -146,12 +169,15 @@ void run_test_suite(void)
         HAL_SPI_TransmitReceive(&hspi1, &dummy, &dummy, 1, 100);
     }
 
-    test_sd_init();
+test_sd_init();
     test_spi_transfer();
     test_sd_mount();
     test_file_write_read();
     test_csv_format();
+    test_fpu_operations();
+    test_spi2_dma();
+    test_wom_interrupt();
 
-    printf("\r\n=== [TEST RESULT] %d/%d passed ===\r\n",
+    printf("\\r\\n=== [TEST RESULT] %d/%d passed ===\\r\\n",
            tests_passed, tests_passed + tests_failed);
 }

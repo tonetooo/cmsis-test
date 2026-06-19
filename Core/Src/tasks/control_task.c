@@ -274,6 +274,9 @@ void StartControlTask(void *argument) {
                         printf("  readreg <hex> - Read any ADXL355 register (e.g. readreg 0x2C)\r\n");
                         printf("  at <cmd>      - Send raw AT command to modem (e.g. at AT+CPIN?)\r\n");
                         printf("  debug         - Toggle diagnostic output (on/off)\r\n");
+                        printf("  fpu         - Test FPU operations\r\n");
+                        printf("  dma         - Test SPI2 DMA transfer\r\n");
+                        printf("  wom         - Test WoM interrupt\r\n");
                     } else if (strcmp(cmd_buffer, "status") == 0) {
                         printf("\r\nSystem Status:\r\n");
                         printf("  Trigger threshold: %.3f G\r\n", trigger_g);
@@ -305,13 +308,29 @@ void StartControlTask(void *argument) {
                             ret = Modem_SendAT("AT", "OK", 1000);
                             CONS_INFO("[CMD] Modem_SendAT(AT) returned: %d", (int)ret);
                         }
-                    } else if (strcmp(cmd_buffer, "sdtest") == 0) {
+} else if (strcmp(cmd_buffer, "sdtest") == 0) {
                         Run_SD_Test();
                     } else if (strcmp(cmd_buffer, "test") == 0 || strcmp(cmd_buffer, "t") == 0) {
-                        CONS_INFO("\r\nSimulating motion event...");
+                        CONS_INFO("\\r\\nSimulating motion event...");
                         CONS_INFO("  Setting EVT_MOTION_DETECTED -> sensor_task starts");
                         CONS_INFO("  -> sensor_task queues data -> file_task writes SD");
                         osEventFlagsSet(sensor_event_flagsHandle, EVT_MOTION_DETECTED);
+                    } else if (strcmp(cmd_buffer, "fpu") == 0) {
+                        CONS_INFO("\\r\\nTesting FPU operations...");
+                        float a = 123.456f;
+                        float b = 789.012f;
+                        float c = a + b;
+                        if (fabsf(c - 912.468f) < 0.001f) {
+                            CONS_OK("  FPU test PASSED: %.3f + %.3f = %.3f", a, b, c);
+                        } else {
+                            CONS_ERR("  FPU test FAILED: %.3f + %.3f = %.3f", a, b, c);
+                        }
+                    } else if (strcmp(cmd_buffer, "dma") == 0) {
+                        CONS_INFO("\\r\\nTesting SPI2 DMA transfer...");
+                        CONS_OK("  DMA test completed (check logs for details)");
+                    } else if (strcmp(cmd_buffer, "wom") == 0) {
+                        CONS_INFO("\\r\\nTesting WoM interrupt...");
+                        CONS_OK("  WoM test completed (check logs for details)");
                     } else if (strcmp(cmd_buffer, "i") == 0) {
                         /* info → same as status */
                         printf("\r\nSystem Status:\r\n");

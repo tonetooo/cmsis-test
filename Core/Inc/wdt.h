@@ -13,7 +13,21 @@
 
 #include <stdint.h>
 
+typedef enum {
+    RESET_REASON_NONE = 0,
+    RESET_REASON_POWER = 1 << 0,      /* Power-on reset */
+    RESET_REASON_PIN = 1 << 1,        /* Pin reset (NRST) */
+    RESET_REASON_BOR = 1 << 2,        /* Brown-out reset */
+    RESET_REASON_SFTR = 1 << 3,       /* Software reset */
+    RESET_REASON_IWDG = 1 << 4,       /* Independent watchdog reset */
+    RESET_REASON_WWDG = 1 << 5,       /* Window watchdog reset */
+    RESET_REASON_LOWPOWER = 1 << 6,   /* Low-power reset */
+} ResetReason;
+
 void WDT_Init(void);
 void WDT_Refresh(void);
+ResetReason WDT_GetResetReason(void);
+void WDT_ClearResetFlags(void);
+void WDT_SystemReset(void);
 
 #endif /* INC_WDT_H_ */
