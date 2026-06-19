@@ -268,28 +268,53 @@ Si `file_task` tarda 500ms en escribir un bloque a SD (latencia alta de FAT):
 
 # 5. Estado DMA y FPU
 
-## 5.1 FPU Deshabilitada (Crítico)
+## 5.1 FPU Habilitada (Crítico) ✅ **IMPLEMENTADO**
 
 | Parámetro | Valor Actual | Recomendado |
 | --- | --- | --- |
-| configENABLE_FPU | 0 (deshabilitada) | 1 (habilitada) |
+| configENABLE_FPU | 1 (habilitada) | 1 (habilitada) |
 
-Impacto: `sensor_task` ejecuta operaciones float por software (~50-200 ciclos/operación). A 10 Hz con 3-5 operaciones float por muestra, el overhead es de ~1,000-5,000 ciclos/s. El Cortex-M4 tiene FPU hardware.
+Impacto: `sensor_task` ejecuta operaciones float por hardware (~1-2 ciclos/operación). A 10 Hz con 3-5 operaciones float por muestra, el overhead es de ~30-50 ciclos/s. El Cortex-M4 tiene FPU hardware.
 
 CRÍTICO: Habilitar FPU (`configENABLE_FPU = 1`) en `FreeRTOSConfig.h` antes de aumentar la tasa de muestreo o agregar procesamiento de señal (FFT, RMS, SNR).
 
-## 5.2 DMA (No Configurado)
+**Estado:** ✅ Completado - FPU habilitada en `FreeRTOSConfig.h` línea 59. Validado con test `fpu` en CLI y test unitario `test_fpu_operations()`.
+
+## 5.2 DMA (Configurado) ✅ **IMPLEMENTADO**
 
 | Interfaz | Método Actual | DMA Configurado | Impacto |
 | --- | --- | --- | --- |
 | SPI1 (SD) | Polling (`USE_DMA = 0`) | No | CPU bloqueada durante transferencias SPI |
-| SPI2 (ADXL355) | Polling (`HAL_SPI_Transmit/Receive`) | No | CPU bloqueada durante lecturas FIFO |
+| SPI2 (ADXL355) | DMA (`HAL_SPI_TransmitReceive_DMA`) | Sí (DMA1 Stream 3/4, Ch 0) | Transferencia continua sin bloquear CPU |
 | USART1 (EC25) | Polling (`HAL_UART_Transmit/Receive`) | No | CPU bloqueada durante comandos AT |
 | USART2 (CLI) | Polling (`printf` → UART) | No | Menor impacto (solo debug) |
 
-Impacto en concurrencia: Sin DMA, las transferencias SPI y UART son bloqueantes. Una lectura de FIFO ADXL355 bloquea la CPU. Un comando AT al módem bloquea el UART.
+Impacto en concurrencia: Con DMA para SPI2, la CPU puede ejecutar otras tareas mientras el acelerómetro transfiere datos. Una lectura de FIFO ADXL355 ya no bloquea la CPU.
 
-Recomendación: Implementar DMA para SPI2 (ADXL355) como prioridad P1.
+**Estado:** ✅ Completado - DMA SPI2 implementado en `adxl355.c` (líneas 418-548):
+- DMA1 Stream 3 (RX) + Stream 4 (TX), Channel 0
+- Semáforo binario para sincronización task↔ISR
+- Función `ADXL355_Read_Data_DMA()` para lectura full-duplex
+- ISRs: `DMA1_Stream3_IRQHandler`, `DMA1_Stream4_IRQHandler`
+- Callback: `HAL_SPI_TxRxCpltCallback` libera semáforo
+
+Validado con comando CLI `dma` y test unitario `test_spi2_dma()`.
+
+## 5.3 Wake-on-Motion (WoM) Interrupt ✅ **IMPLEMENTADO**
+
+| Parámetro | Valor Actual | Estado |
+| --- | --- | --- |
+| INT1 (PC7) | EXTI Falling Edge, Pull-Down | ✅ Configurado |
+| Activity Detection | X+Y axes, HPF OFF | ✅ Configurado |
+| Threshold | Configurable via `ADXL355_Config_WakeOnMotion()` | ✅ Implementado |
+| CLI Test | Comando `wom` | ✅ Disponible |
+
+**Estado:** ✅ Completado - WoM implementado en `adxl355.c` (líneas 235-270):
+- Función `ADXL355_Config_WakeOnMotion(threshold_g, count)`
+- Umbral configurable en G, cuenta de muestras consecutivas
+- Ejes X+Y habilitados (evita falsos positivos por gravedad en Z)
+- Interrupción mapeada a INT1 (PC7, EXTI9_5_IRQn, prioridad 5)
+- Validado con comando CLI `wom` y test unitario `test_wom_interrupt()`
 
 ---
 
@@ -347,16 +372,16 @@ ATENCIÓN: No recomendado para la versión actual. El costo de portar supera los
 
 ## 9.1 Prioridad 1 - Crítico (operación confiable en terreno)
 
-| # | Actividad | Implementación | Archivos |
-| --- | --- | --- | --- |
-| 9.1.1 | DMA para adquisición de datos | Configurar DMA2 Stream0 o Stream3, circular/normal | adxl355.c, stm32f4xx_hal_msp.c, CubeMX.ioc |
-| 9.1.2 | Habilitar FPU | 1 línea en FreeRTOSConfig.h | FreeRTOSConfig.h |
-| 9.1.3 | Adquisición en tiempo continuo | Modo CONTINUOUS en sensor_task | sensor_task.c, control_task.c |
-| 9.1.4 | Calibración del acelerómetro | Comando CLI `calibrate` + coeficientes en flash | adxl355.c, control_task.c |
-| 9.1.5 | Watchdog | CubeMX IWDG + `HAL_IWDG_Refresh()` | CubeMX.ioc, freertos.c |
-| 9.1.6 | Buffer local ante pérdida de conectividad | Cola de archivos pendientes + reintento en modem_task | file_task.c, modem_task.c |
-| 9.1.7 | Sincronización horaria | NTP vía módem (AT+QNTP) | quectel_drive.c, sensor_task.c |
-| 9.1.8 | Optimización de consumo energético | `HAL_SuspendTick()` en idle, apagar periféricos, reducir ODR | freertos.c, CubeMX.ioc |
+| # | Actividad | Implementación | Archivos | Estado |
+| --- | --- | --- | --- | --- |
+| 9.1.1 | DMA para adquisición de datos | Configurar DMA1 Stream 3/4 (RX/TX), Channel 0, modo normal | adxl355.c (líneas 418-548), stm32f4xx_hal_msp.c, CubeMX.ioc | ✅ **COMPLETADO** |
+| 9.1.2 | Habilitar FPU | `configENABLE_FPU = 1` en FreeRTOSConfig.h | FreeRTOSConfig.h (línea 59) | ✅ **COMPLETADO** |
+| 9.1.3 | Adquisición en tiempo continuo | Modo CONTINUOUS en sensor_task | sensor_task.c, control_task.c | 🔄 **EN PROGRESO** (20%) |
+| 9.1.4 | Calibración del acelerómetro | Comando CLI `calibrate` + coeficientes en flash | adxl355.c, control_task.c | 🔄 **INICIADO** (10%) |
+| 9.1.5 | Watchdog | CubeMX IWDG + `HAL_IWDG_Refresh()` | CubeMX.ioc, freertos.c | ⏳ **PENDIENTE** |
+| 9.1.6 | Buffer local ante pérdida de conectividad | Cola de archivos pendientes + reintento en modem_task | file_task.c, modem_task.c | 🔄 **INICIADO** (10%) |
+| 9.1.7 | Sincronización horaria | NTP vía módem (AT+QNTP) | quectel_drive.c, sensor_task.c | 🔄 **INICIADO** (10%) |
+| 9.1.8 | Optimización de consumo energético | `HAL_SuspendTick()` en idle, apagar periféricos, reducir ODR | freertos.c, CubeMX.ioc | ⏳ **PENDIENTE** |
 
 ## 9.2 Prioridad 2 - Alto (confiabilidad y diagnóstico remoto)
 
@@ -432,6 +457,13 @@ o `screen /dev/tty.usbmodem* 115200`
 | `test` | Simula evento de movimiento (prueba de pipeline) |
 | `sdtest` | Adquisición forzada 10s + tabla ASCII en SD |
 | `modem_on` | Enciende módem + prueba sincronización AT |
+| `sensstat` | Lee registro STATUS del ADXL355 (ACT/DRDY bits) |
+| `readreg <hex>` | Lee cualquier registro ADXL355 (ej. `readreg 0x2C`) |
+| `at <cmd>` | Envía comando AT crudo al módem (ej. `at AT+CPIN?`) |
+| `debug` | Alterna salida diagnóstica (on/off) |
+| `fpu` | Test operaciones FPU (hardware float) |
+| `dma` | Test transferencia SPI2 DMA |
+| `wom` | Test interrupción Wake-on-Motion |
 
 ---
 
