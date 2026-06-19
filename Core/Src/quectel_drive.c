@@ -680,49 +680,29 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         char fullpath[32];
         snprintf(fullpath, sizeof(fullpath), "0:%s", filename);
 
-        /* === RAM BUFFER UPLOAD ===
-         * If file_task buffered the CSV in RAM, use it directly.
-         * This bypasses the SD card entirely — no brown-out risk. */
-        uint8_t *ram_ptr = upload_buf;
-        uint32_t ram_remaining = upload_buf_size;
-
-        if (ram_ptr != NULL && ram_remaining > 0) {
-            CONS_OK("[MODEM] Using RAM buffer (%lu bytes) — SD bypass active",
-                    (unsigned long)ram_remaining);
-        } else {
-            CONS_WARN("[MODEM] No RAM buffer available, falling back to SD card");
-            ram_ptr = NULL;
-            ram_remaining = 0;
+        /* === CSV UPLOAD FROM SD CARD ===
+         * Read the CSV file from SD card and send as text/csv.
+         * This ensures Google Drive receives proper CSV format. */
+        osMutexAcquire(sd_mutexHandle, osWaitForever);
+        CONS_DBG("[MODEM] f_open CSV from SD: %s\r\n", fullpath);
+        FRESULT fr = f_open(&f, fullpath, FA_READ);
+        if (fr != FR_OK) {
+            CONS_DBG("[MODEM] f_open failed (FRESULT=%d), re-initializing SD...\r\n", (int)fr);
+            sd_init();
+            f_mount(&fs, "0:", 1);
+            fr = f_open(&f, fullpath, FA_READ);
         }
-
-        DWORD fsz;
-        FIL f;
-        int using_ram = (ram_ptr != NULL && ram_remaining > 0);
-
-        if (using_ram) {
-            fsz = (DWORD)ram_remaining;
-        } else {
-            osMutexAcquire(sd_mutexHandle, osWaitForever);
-            CONS_DBG("[MODEM] f_open (no re-init): %s\r\n", fullpath);
-            FRESULT fr = f_open(&f, fullpath, FA_READ);
-            if (fr != FR_OK) {
-                CONS_DBG("[MODEM] f_open failed (FRESULT=%d), re-initializing SD...\r\n", (int)fr);
-                sd_init();
-                f_mount(&fs, "0:", 1);
-                fr = f_open(&f, fullpath, FA_READ);
-            }
-            if (fr != FR_OK) {
-                osMutexRelease(sd_mutexHandle);
-                CONS_ERR("[MODEM] Cannot open file: %s (FRESULT=%d)\r\n", fullpath, (int)fr);
-                Modem_PowerOff();
-                return HAL_ERROR;
-            }
-            fsz = f_size(&f);
+        if (fr != FR_OK) {
+            osMutexRelease(sd_mutexHandle);
+            CONS_ERR("[MODEM] Cannot open CSV file: %s (FRESULT=%d)\r\n", fullpath, (int)fr);
+            Modem_PowerOff();
+            return HAL_ERROR;
         }
+        DWORD fsz = f_size(&f);
+        osMutexRelease(sd_mutexHandle);
         
-        // Preparar cabeceras manuales
-        // Binary (RAM) → application/octet-stream; CSV (SD fallback) → text/csv
-        const char *content_type = using_ram ? "application/octet-stream" : "text/csv";
+        // CSV content type
+        const char *content_type = "text/csv";
         char header[640];
         int header_len;
         if (BACKEND_API_KEY[0] != 0) {
@@ -749,7 +729,6 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         // Timeout POST aumentado a 120s, wait time 120s
         snprintf(cmd, sizeof(cmd), "AT+QHTTPPOST=%lu,120,120", (unsigned long)total_len);
         if (Modem_SendAT(cmd, "CONNECT", 15000) != HAL_OK) {
-            if (!using_ram) { f_close(&f); osMutexRelease(sd_mutexHandle); }
             Modem_PowerOff();
             return HAL_ERROR;
         }
@@ -757,41 +736,36 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         // Enviar Cabeceras
         HAL_UART_Transmit(_modem_uart, (uint8_t*)header, header_len, 2000);
 
-        // Enviar Archivo (RAM o SD)
-        if (using_ram) {
-            /* RAM path: send directly from buffer */
-            DWORD remaining = fsz;
-            uint32_t offset = 0;
-            while (remaining > 0) {
-                WDT_Refresh();
-                UINT to_send = remaining > HTTP_CHUNK_SIZE ? HTTP_CHUNK_SIZE : (UINT)remaining;
-                HAL_UART_Transmit(_modem_uart, ram_ptr + offset, to_send, 5000);
-                offset += to_send;
-                remaining -= to_send;
-            }
-        } else {
-            /* SD path: read chunks from file */
-            UINT br;
-            uint8_t buf[HTTP_CHUNK_SIZE];
-            DWORD remaining = fsz;
-            while (remaining > 0) {
-                WDT_Refresh();
-                UINT to_read = remaining > HTTP_CHUNK_SIZE ? HTTP_CHUNK_SIZE : (UINT)remaining;
-                if (f_read(&f, buf, to_read, &br) != FR_OK) {
-                    f_close(&f);
-                    osMutexRelease(sd_mutexHandle);
-                    Modem_PowerOff();
-                    return HAL_ERROR;
-                }
-                if (br == 0) break;
-                HAL_UART_Transmit(_modem_uart, buf, br, 5000);
-                remaining -= br;
-            }
-            f_close(&f);
+        // Enviar Archivo CSV desde SD
+        osMutexAcquire(sd_mutexHandle, osWaitForever);
+        fr = f_open(&f, fullpath, FA_READ);
+        if (fr != FR_OK) {
             osMutexRelease(sd_mutexHandle);
+            CONS_ERR("[MODEM] Cannot re-open CSV for upload: %s (FRESULT=%d)\r\n", fullpath, (int)fr);
+            Modem_PowerOff();
+            return HAL_ERROR;
         }
 
-        /* Free upload buffer — data already transmitted to modem */
+        UINT br;
+        uint8_t buf[HTTP_CHUNK_SIZE];
+        DWORD remaining = fsz;
+        while (remaining > 0) {
+            WDT_Refresh();
+            UINT to_read = remaining > HTTP_CHUNK_SIZE ? HTTP_CHUNK_SIZE : (UINT)remaining;
+            if (f_read(&f, buf, to_read, &br) != FR_OK) {
+                f_close(&f);
+                osMutexRelease(sd_mutexHandle);
+                Modem_PowerOff();
+                return HAL_ERROR;
+            }
+            if (br == 0) break;
+            HAL_UART_Transmit(_modem_uart, buf, br, 5000);
+            remaining -= br;
+        }
+        f_close(&f);
+        osMutexRelease(sd_mutexHandle);
+
+        /* Free upload buffer — not used for CSV upload, but clean up if allocated */
         if (upload_buf != NULL) {
             vPortFree(upload_buf);
             upload_buf = NULL;
