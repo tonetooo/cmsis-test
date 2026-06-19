@@ -111,7 +111,10 @@ void StartSensorTask(void *argument) {
             reading.voltage = 0.0f;
             reading.current = 0.0f;
             reading.power = 0.0f;
-            osMessageQueuePut(sensor_queueHandle, &reading, 0, 0);
+            osStatus_t q_ret = osMessageQueuePut(sensor_queueHandle, &reading, 0, 0);
+            if (q_ret != osOK) {
+                CONS_ERR("[SENSOR] Queue FULL — sample dropped (ret=%d, queued=%lu)", q_ret, osMessageQueueGetCount(sensor_queueHandle));
+            }
             /* Settling logic - delta-based, independiente del offset absoluto */
             float delta = (prev_mag < 0) ? 0.0f :
                           fabsf(current_mag - prev_mag);

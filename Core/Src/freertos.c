@@ -139,7 +139,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of sensor_queue */
-  sensor_queueHandle = osMessageQueueNew (50, 28, &sensor_queue_attributes);
+  sensor_queueHandle = osMessageQueueNew (500, 28, &sensor_queue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */

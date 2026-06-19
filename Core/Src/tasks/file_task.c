@@ -41,6 +41,7 @@ void StartFileTask(void *argument) {
     uint32_t mutex_acquire_count = 0;
     uint32_t mutex_contention_count = 0;
     uint8_t create_fail_count = 0;
+    uint8_t acqstn_pending = 0;  /* EVT_ACQSTN_DONE arrived while file was closed (e.g., during upload) */
     int scan_start = 1;
 
     /* Pre-allocate binary upload buffer (28 bytes/sample, 32KB = 1170 samples).
@@ -54,7 +55,17 @@ void StartFileTask(void *argument) {
     for (;;) {
         WDT_Refresh();
         SensorReading_t reading;
-        osStatus_t status = osMessageQueueGet(sensor_queueHandle, &reading, NULL, 200);
+        osStatus_t status;
+
+        /* During upload with no active file, skip queue reads to let data
+         * accumulate. When upload completes, the backlog will be drained
+         * and written to the new acquisition file. */
+        if (!file_open && upload_busy) {
+            status = osErrorResource;
+            osDelay(5);
+        } else {
+            status = osMessageQueueGet(sensor_queueHandle, &reading, NULL, 200);
+        }
 
         if (status == osOK) {
             /* === ACQUIRE SD MUTEX === */
@@ -144,6 +155,7 @@ void StartFileTask(void *argument) {
                     file_open = 1;
                     write_count = 0;
                     create_fail_count = 0;  /* Reset on success */
+                    acqstn_pending = 0;    /* Pending acquisition is now being handled */
                     CONS_OK("[FILE] Opened %s for writing", filename);
                 } else {
                     create_fail_count++;
@@ -281,10 +293,14 @@ void StartFileTask(void *argument) {
         /* Check if acquisition is done */
         uint32_t flags = osEventFlagsGet(sensor_event_flagsHandle);
 
-        /* If file creation failed persistently, still clear flags so sensor_task can proceed */
+        /* Acquisition completed while file was closed (e.g., during modem upload).
+         * Don't clear EVT_ACQSTN_DONE — it persists until file_task opens the new
+         * acquisition's file and finalizes normally. */
         if (!file_open && (flags & EVT_ACQSTN_DONE)) {
-            CONS_WARN("[FILE] ACQSTN_DONE but file_open=0 — file creation failed persistently, clearing flag");
-            osEventFlagsClear(sensor_event_flagsHandle, EVT_ACQSTN_DONE);
+            if (!acqstn_pending) {
+                acqstn_pending = 1;
+                CONS_INFO("[FILE] ACQSTN_DONE during upload — pending file open (will process when upload completes)");
+            }
         }
 
         if (file_open && (flags & EVT_ACQSTN_DONE)) {

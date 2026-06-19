@@ -34,6 +34,10 @@ void StartModemTask(void *argument) {
         if (result == HAL_OK) {
             CONS_OK("[MODEM] Upload completed successfully");
             osEventFlagsSet(sensor_event_flagsHandle, EVT_UPLOAD_DONE);
+            /* Clear EVT_FILE_READY to prevent re-uploading the same file.
+             * file_task's acqstn_pending mechanism re-sets it if a new
+             * acquisition completed during the upload. */
+            osEventFlagsClear(sensor_event_flagsHandle, EVT_FILE_READY);
             upload_retry_count = 0;  /* Reset retry count on successful upload */
         } else {
             CONS_ERR("[MODEM] Upload failed (result=%d)", (int)result);
@@ -49,6 +53,5 @@ void StartModemTask(void *argument) {
             }
         }
 
-        osEventFlagsClear(sensor_event_flagsHandle, EVT_FILE_READY);
     }
 }
