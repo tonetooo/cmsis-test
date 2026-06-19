@@ -7,6 +7,20 @@
 #include "Sd_spi.h"
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
+
+/* _gettimeofday stub for time() / localtime() support */
+int _gettimeofday(struct timeval *tv, void *tz)
+{
+    (void)tz;
+    if (tv) {
+        /* Use HAL_GetTick() as time base (ms since boot) */
+        tv->tv_sec = HAL_GetTick() / 1000;
+        tv->tv_usec = (HAL_GetTick() % 1000) * 1000;
+    }
+    return 0;
+}
 
 /* Disk status */
 static volatile DSTATUS Stat = STA_NOINIT;
@@ -167,18 +181,38 @@ DRESULT SD_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 #endif /* _USE_IOCTL == 1 */
 
 /**
-  * @brief  Gets current time for file timestamps
-  * @retval DWORD: Packed date/time
-  */
+   * @brief  Gets current time for file timestamps
+   * @retval DWORD: Packed date/time
+   */
 __weak DWORD get_fattime(void)
 {
-    /* Return a fixed date/time: 2025-01-01 00:00:00 */
-    return ((DWORD)(2025 - 1980) << 25)  /* Year */
-         | ((DWORD)1 << 21)              /* Month */
-         | ((DWORD)1 << 16)              /* Day */
-         | ((DWORD)0 << 11)              /* Hour */
-         | ((DWORD)0 << 5)               /* Minute */
-         | ((DWORD)0 >> 1);              /* Second / 2 */
+    time_t current_time;
+    struct tm *time_info;
+    DWORD fattime = 0;
+
+    /* Get current time */
+    current_time = time(NULL);
+    time_info = localtime(&current_time);
+
+    /* Convert to FAT format: YYYYMMDDhhmmss/2 */
+    if (time_info) {
+        fattime = ((DWORD)(time_info->tm_year - 80) << 25)  /* Year */
+                 | ((DWORD)(time_info->tm_mon + 1) << 21)   /* Month */
+                 | ((DWORD)time_info->tm_mday << 16)       /* Day */
+                 | ((DWORD)time_info->tm_hour << 11)       /* Hour */
+                 | ((DWORD)time_info->tm_min << 5)        /* Minute */
+                 | ((DWORD)time_info->tm_sec >> 1);       /* Second / 2 */
+    } else {
+        /* Fallback to fixed date if time is not available */
+        fattime = ((DWORD)(2025 - 1980) << 25)  /* Year */
+                 | ((DWORD)1 << 21)              /* Month */
+                 | ((DWORD)1 << 16)              /* Day */
+                 | ((DWORD)0 << 11)              /* Hour */
+                 | ((DWORD)0 << 5)               /* Minute */
+                 | ((DWORD)0 >> 1);              /* Second / 2 */
+    }
+
+    return fattime;
 }
 
 /* ============================= */

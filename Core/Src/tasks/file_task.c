@@ -6,13 +6,29 @@
 #include "console.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
 
 extern FATFS fs;
 extern FIL fil;
+extern uint8_t sd_reinit(void);  // Full SD hardware re-init
 
-char latest_filename[32] = {0};
-uint8_t *upload_buf = NULL;
-uint32_t upload_buf_size = 0;
+    char latest_filename[32] = {0};
+    uint8_t *upload_buf = NULL;
+    uint32_t upload_buf_size = 0;
+
+    /* Local buffer for failed uploads */
+    #define LOCAL_BUF_CAPACITY (32 * 1024)  /* 32KB local buffer (fits in heap) */
+    uint8_t *local_buf = NULL;
+    uint32_t local_buf_size = 0;
+    uint32_t local_buf_max_size = LOCAL_BUF_CAPACITY;
+    uint32_t upload_retry_count = 0;
+    uint32_t max_upload_retries = 3;
+    volatile uint8_t upload_busy = 0;
+
+    /* FR_DENIED/LOCKED tracking — prevents infinite re-init loop on corrupted entries */
+    #define MAX_DENIED_RETRIES 3
+    uint8_t denied_retry_count = 0;
+    int last_denied_index = -1;
 
 void StartFileTask(void *argument) {
     CONS_INFO("[FILE] Task started (prio=Normal)");
@@ -24,6 +40,8 @@ void StartFileTask(void *argument) {
     uint32_t write_count = 0;
     uint32_t mutex_acquire_count = 0;
     uint32_t mutex_contention_count = 0;
+    uint8_t create_fail_count = 0;
+    int scan_start = 1;
 
     /* Pre-allocate binary upload buffer (28 bytes/sample, 32KB = 1170 samples).
      * Each sample is accumulated DURING writing to SD — no f_lseek needed.
@@ -31,7 +49,7 @@ void StartFileTask(void *argument) {
     uint32_t bin_offset = 0;  /* Current write position in binary buffer */
     uint32_t bin_capacity = UPLOAD_BUF_CAPACITY;
 
-    /* Don't allocate yet — wait for first sample to confirm heap availability */
+    /* Local buffer allocated on-demand after acquisition (to avoid starving upload_buf) */
 
     for (;;) {
         WDT_Refresh();
@@ -51,16 +69,22 @@ void StartFileTask(void *argument) {
             /* === MUTEX ACQUIRED === */
 
             if (!file_open) {
-                /* Free previous upload buffer if any */
+                /* Free previous upload buffer if any — but only if modem_task
+                 * is not currently using it (upload_busy protection against
+                 * use-after-free when new acquisition starts during upload). */
                 if (upload_buf != NULL) {
-                    vPortFree(upload_buf);
-                    upload_buf = NULL;
-                    upload_buf_size = 0;
+                    if (upload_busy) {
+                        CONS_DBG("[FILE] Upload in progress, preserving previous upload_buf");
+                    } else {
+                        vPortFree(upload_buf);
+                        upload_buf = NULL;
+                        upload_buf_size = 0;
+                    }
                 }
                 bin_offset = 0;
 
                 /* Pre-allocate binary buffer for this acquisition */
-                if (upload_buf == NULL) {
+                if (upload_buf == NULL && !upload_busy) {
                     upload_buf = (uint8_t *)pvPortMalloc(bin_capacity);
                     if (upload_buf != NULL) {
                         bin_offset = 0;
@@ -74,17 +98,43 @@ void StartFileTask(void *argument) {
                     }
                 }
 
-                /* Find next available filename */
-                CONS_INFO("[FILE] Scanning for next available TRIG_XXX.CSV...");
-                for (int i = 1; i < 999; i++) {
+                /* Find next available filename — skip indices that previously failed creation.
+                 * Use local FIL to avoid cross-contamination with global 'fil' handle. */
+                CONS_INFO("[FILE] Scanning for next available TRIG_XXX.CSV (start=%d)...", scan_start);
+                for (int i = scan_start; i < 999; i++) {
                     sprintf(filename, "TRIG_%03d.CSV", i);
-                    if (f_open(&fil, filename, FA_READ) != FR_OK) break;
-                    f_close(&fil);
+                    FIL scan_fil;
+                    FRESULT scan_fr = f_open(&scan_fil, filename, FA_READ);
+                    if (scan_fr != FR_OK) break;
+                    FRESULT close_fr = f_close(&scan_fil);
+                    if (close_fr != FR_OK) {
+                        CONS_WARN("[FILE] f_close on %s returned FR=%d during scan", filename, close_fr);
+                    }
                 }
                 CONS_DBG("[FILE] Next filename: %s", filename);
 
                 WDT_Refresh();
-                if (f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK) {
+
+                FRESULT fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
+                if (fr != FR_OK) {
+                    CONS_WARN("[FILE] CREATE_ALWAYS failed on %s (FR=%d) — attempting f_unlink", filename, fr);
+                    FRESULT ur = f_unlink(filename);
+                    CONS_WARN("[FILE] f_unlink(%s) = %d", filename, ur);
+                    if (ur != FR_OK) {
+                        int idx = 0;
+                        if (sscanf(filename, "TRIG_%d.CSV", &idx) == 1) {
+                            scan_start = idx + 1;
+                            CONS_WARN("[FILE] Skipping index %d, next scan from %d", idx, scan_start);
+                        }
+                    } else {
+                        CONS_OK("[FILE] f_unlink succeeded, will retry %s", filename);
+                    }
+                    osDelay(50);
+                    WDT_Refresh();
+                }
+
+                fr = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
+                if (fr == FR_OK) {
                     /* Write CSV header */
                     char header[] = "timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n";
                     UINT bw;
@@ -93,9 +143,85 @@ void StartFileTask(void *argument) {
                     f_sync(&fil);
                     file_open = 1;
                     write_count = 0;
+                    create_fail_count = 0;  /* Reset on success */
                     CONS_OK("[FILE] Opened %s for writing", filename);
                 } else {
-                    CONS_ERR("[FILE] Could not create %s", filename);
+                    create_fail_count++;
+                    CONS_ERR("[FILE] Could not create %s (fail #%lu, FR=%d)",
+                             filename, (unsigned long)create_fail_count, fr);
+
+                    /* FR_DENIED (7) / FR_LOCKED (16) = SD write protection, lock, or hardware issue.
+                     * Tracks retries per-index to detect ghost/corrupted directory entries. */
+                    if (fr == FR_DENIED || fr == FR_LOCKED) {
+                        int fail_idx = 0;
+                        sscanf(filename, "TRIG_%d.CSV", &fail_idx);
+
+                        if (fail_idx == last_denied_index && fail_idx > 0) {
+                            if (denied_retry_count < MAX_DENIED_RETRIES)
+                                denied_retry_count++;
+                        } else {
+                            denied_retry_count = 0;
+                            last_denied_index = fail_idx;
+                        }
+
+                        CONS_WARN("[FILE] FR=%d on %s (denied_retry=%d/%d)",
+                                  fr, filename, denied_retry_count, MAX_DENIED_RETRIES);
+
+                        if (denied_retry_count >= MAX_DENIED_RETRIES) {
+                            /* Same index persistently denied — ghost/corrupted entry.
+                             * Skip it permanently and refresh FatFs directly (no HW re-init). */
+                            CONS_ERR("[FILE] %s persistently DENIED — ghost entry, skipping permanently", filename);
+                            scan_start = (fail_idx > 0) ? (fail_idx + 1) : (scan_start + 1);
+                            denied_retry_count = 0;
+                            last_denied_index = -1;
+                            /* Fresh FatFs remount without HW re-init */
+                            f_mount(NULL, "0:/", 0);
+                            osDelay(50);
+                            f_mount(&fs, "0:/", 1);
+                            CONS_WARN("[FILE] FatFs fresh remount, next scan from %d", scan_start);
+                        } else {
+                            /* Full SD hardware re-init (first N-1 attempts) */
+                            CONS_WARN("[FILE] FR=%d — triggering SD hardware re-init...", fr);
+                            osMutexRelease(sd_mutexHandle);
+                            uint8_t reinit_result = sd_reinit();
+                            osDelay(200);
+                            if (reinit_result == 0) {
+                                f_mount(NULL, "0:/", 0);
+                                osDelay(50);
+                                f_mount(&fs, "0:/", 1);
+                                CONS_OK("[FILE] SD re-init + FatFs fresh remount successful");
+                            } else {
+                                CONS_ERR("[FILE] SD re-init FAILED after max attempts");
+                                CONS_ERR("[FILE] SD card may be write-protected or damaged");
+                                f_mount(&fs, "0:/", 1);
+                                osMutexAcquire(sd_mutexHandle, osWaitForever);
+                                while (1) {
+                                    CONS_ERR("[FILE] FATAL: Cannot write to SD — system halted");
+                                    osDelay(5000);
+                                    WDT_Refresh();
+                                }
+                            }
+                            osMutexAcquire(sd_mutexHandle, osWaitForever);
+                            create_fail_count = 0;
+                            scan_start = 1;
+                            CONS_OK("[FILE] SD online, will retry from TRIG_001");
+                        }
+                    }
+                    /* After 3 consecutive failures (non-DENIED), force FatFs remount */
+                    else if (create_fail_count >= 3) {
+                        CONS_WARN("[FILE] %lu consecutive create failures — remounting FatFs...",
+                                  (unsigned long)create_fail_count);
+                        osMutexRelease(sd_mutexHandle);
+                        f_mount(NULL, "0:/", 0);
+                        osDelay(100);
+                        f_mount(&fs, "0:/", 1);
+                        osMutexAcquire(sd_mutexHandle, osWaitForever);
+                        create_fail_count = 0;
+                        CONS_OK("[FILE] FatFs remounted, will retry next iteration");
+                    }
+
+                    /* Rate-limit: wait 500ms before retrying */
+                    osDelay(500);
                 }
             }
 
@@ -154,6 +280,13 @@ void StartFileTask(void *argument) {
 
         /* Check if acquisition is done */
         uint32_t flags = osEventFlagsGet(sensor_event_flagsHandle);
+
+        /* If file creation failed persistently, still clear flags so sensor_task can proceed */
+        if (!file_open && (flags & EVT_ACQSTN_DONE)) {
+            CONS_WARN("[FILE] ACQSTN_DONE but file_open=0 — file creation failed persistently, clearing flag");
+            osEventFlagsClear(sensor_event_flagsHandle, EVT_ACQSTN_DONE);
+        }
+
         if (file_open && (flags & EVT_ACQSTN_DONE)) {
             if (osMessageQueueGetCount(sensor_queueHandle) == 0) {
                 uint32_t now = osKernelGetTickCount();
@@ -167,6 +300,34 @@ void StartFileTask(void *argument) {
 
                     f_sync(&fil);
                     f_close(&fil);
+
+                    /* Force fresh FatFs directory read so this file is visible
+                     * to the next scan loop. Otherwise FatFs cache may hide the
+                     * just-closed file, and the scan will reuse the same index. */
+                    osDelay(50);
+                    f_mount(NULL, "0:/", 0);
+                    osDelay(20);
+                    f_mount(&fs, "0:/", 1);
+
+                    /* Verify the closed file is visible on SD */
+                    FIL vf;
+                    int verify_ok = 0;
+                    for (int tries = 0; tries < 3; tries++) {
+                        if (f_open(&vf, filename, FA_READ) == FR_OK) {
+                            f_close(&vf);
+                            verify_ok = 1;
+                            break;
+                        }
+                        osDelay(50);
+                    }
+                    if (!verify_ok) {
+                        int idx = 0;
+                        sscanf(filename, "TRIG_%d.CSV", &idx);
+                        CONS_ERR("[FILE][TRIG] f_open(FA_READ) on freshly closed %s FAILED "
+                                 "after remount+retry — file not persistent! "
+                                 "Skipping index %d in next scan.", filename, idx);
+                        if (idx > 0) scan_start = idx + 1;
+                    }
 
                     osMutexRelease(sd_mutexHandle);
                     /* === MUTEX RELEASED === */
@@ -182,15 +343,13 @@ void StartFileTask(void *argument) {
                         CONS_WARN("[FILE] No binary buffer — upload will try SD (may fail after modem brown-out)");
                     }
 
-                    /* Use .BIN extension for upload (binary format) */
+                    /* Keep original .CSV filename for both RAM and SD uploads */
                     strncpy(latest_filename, filename, sizeof(latest_filename) - 1);
                     latest_filename[sizeof(latest_filename) - 1] = '\0';
-                    /* Replace .CSV with .BIN for upload */
-                    char *dot = strrchr(latest_filename, '.');
-                    if (dot) strcpy(dot, ".BIN");
 
                     osEventFlagsSet(sensor_event_flagsHandle, EVT_FILE_READY);
                     CONS_OK("[FILE] EVT_FILE_READY signaled, modem_task will upload '%s'", latest_filename);
+                    upload_retry_count = 0;
 
                     /* Clear ACQSTN_DONE so sensor_task knows file_task has finished */
                     osEventFlagsClear(sensor_event_flagsHandle, EVT_ACQSTN_DONE);

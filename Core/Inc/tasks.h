@@ -40,6 +40,20 @@ extern char latest_filename[32];
 extern uint8_t *upload_buf;
 extern uint32_t upload_buf_size;
 
+/* Local buffer for failed uploads (allocated on-demand, not at boot — to avoid starving upload_buf) */
+extern uint8_t *local_buf;
+extern uint32_t local_buf_size;
+extern uint32_t local_buf_max_size;
+
+/* Upload retry mechanism */
+extern uint32_t upload_retry_count;
+extern uint32_t max_upload_retries;
+
+/* Synchronization flag: set by modem_task during Modem_UploadFile,
+ * checked by file_task before freeing/reallocating upload_buf.
+ * Prevents use-after-free when a new acquisition starts while upload is in progress. */
+extern volatile uint8_t upload_busy;
+
 /* Abort flag — set by sdtest to force sensor task out of acquisition */
 extern volatile uint8_t sdbg_abort_acq;
 

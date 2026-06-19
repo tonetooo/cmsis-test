@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "main.h"
 #include "Sd_spi.h"
 #include "ff_gen_drv.h"
@@ -27,6 +28,10 @@ FATFS fs;
 FIL fil;
 static char sd_path[4] = "0:/";
 static uint8_t sd_card_type = SD_TYPE_UNKNOWN;
+
+// Re-init counter (must be before sd_init() which uses it)
+static uint8_t reinit_count = 0;
+#define MAX_REINIT_ATTEMPTS 3
 
 static const char* sd_card_type_str(uint8_t t) {
     switch (t) {
@@ -325,6 +330,59 @@ uint8_t sd_init(void)
         return 1;
     }
 
+    // Check card status for write protection (CMD13 - SEND_STATUS)
+    CONS_INFO("[STORAGE] Step 6b/7: Checking write protect status (CMD13)...\r\n");
+    SD_CS_LOW();
+    if (sd_send_cmd(CMD13, 0) == 0x00) {
+        uint8_t status[2];
+        status[0] = spi_send(0xFF);
+        status[1] = spi_send(0xFF);
+        SD_CS_HIGH();
+        spi_send(0xFF);
+        
+        // Status bits: bit 15=WP (write protect), bit 14=card is locked
+        bool wp = (status[0] & 0x80) != 0;
+        bool locked = (status[0] & 0x40) != 0;
+        CONS_INFO("[STORAGE] Card status: 0x%02X%02X (WP=%d, LOCKED=%d)\r\n", 
+                  status[0], status[1], wp, locked);
+        
+        if (wp || locked) {
+            CONS_ERR("[STORAGE] [FAIL] SD card is WRITE PROTECTED or LOCKED!\r\n");
+            CONS_ERR("[STORAGE] Check physical write-protect switch on SD card.\r\n");
+            // Try to unlock via CMD42 if locked
+            if (locked) {
+                CONS_WARN("[STORAGE] Attempting to unlock card via CMD42...\r\n");
+                SD_CS_LOW();
+                uint8_t unlock_res = sd_send_cmd(CMD42, 0); // Unlock card (no password)
+                SD_CS_HIGH();
+                spi_send(0xFF);
+                if (unlock_res == 0x00) {
+                    CONS_OK("[STORAGE] CMD42 unlock succeeded, re-checking status...\r\n");
+                    // Re-check status
+                    SD_CS_LOW();
+                    if (sd_send_cmd(CMD13, 0) == 0x00) {
+                        status[0] = spi_send(0xFF);
+                        status[1] = spi_send(0xFF);
+                        SD_CS_HIGH();
+                        spi_send(0xFF);
+                        locked = (status[0] & 0x40) != 0;
+                        if (!locked) {
+                            CONS_OK("[STORAGE] Card unlocked successfully!\r\n");
+                        } else {
+                            CONS_ERR("[STORAGE] Card still locked after CMD42\r\n");
+                        }
+                    }
+                } else {
+                    CONS_ERR("[STORAGE] CMD42 unlock failed (res=0x%02X)\r\n", unlock_res);
+                }
+            }
+        }
+    } else {
+        SD_CS_HIGH();
+        spi_send(0xFF);
+        CONS_WARN("[STORAGE] CMD13 failed, skipping write-protect check\r\n");
+    }
+
     // Set block size to 512 bytes (for non-SDHC cards)
     if (sd_card_type != SD_TYPE_V2HC) {
         CONS_INFO("[STORAGE] SDHC not detected, setting block size to 512 via CMD16\r\n");
@@ -334,16 +392,46 @@ uint8_t sd_init(void)
     SD_CS_HIGH();
     spi_send(0xFF);
 
-    CONS_INFO("[STORAGE] Step 7/7: Speed up SPI for data transfer (11.25 MHz)...\r\n");
-    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8; 
+    CONS_INFO("[STORAGE] Step 7/7: Speed up SPI for data transfer (5.625 MHz)...\r\n");
+    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; 
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        CONS_ERR("[STORAGE] [FAIL] Final SPI init at 11.25 MHz failed\r\n");
+        CONS_ERR("[STORAGE] [FAIL] Final SPI init at 5.625 MHz failed\r\n");
     } else {
-        CONS_OK("[STORAGE] SPI running at 11.25 MHz\r\n");
+        CONS_OK("[STORAGE] SPI running at 5.625 MHz\r\n");
     }
     CONS_INFO("[STORAGE] === SD INIT DONE: %s ===\r\n", sd_card_type_str(sd_card_type));
+    
+    // Reset re-init counter on successful fresh init
+    reinit_count = 0;
 
     return 0;
+}
+
+// Full hardware re-initialization (for recovery from write errors / FR_DENIED)
+
+uint8_t sd_reinit(void)
+{
+    if (reinit_count >= MAX_REINIT_ATTEMPTS) {
+        CONS_ERR("[STORAGE] Max re-init attempts (%d) reached — giving up\r\n", MAX_REINIT_ATTEMPTS);
+        return 1;
+    }
+    
+    reinit_count++;
+    CONS_WARN("[STORAGE] === SD RE-INIT START (attempt %d/%d) ===\r\n", reinit_count, MAX_REINIT_ATTEMPTS);
+    
+    // Reset card type to force full re-detection
+    sd_card_type = SD_TYPE_UNKNOWN;
+    
+    // Re-run full init sequence
+    uint8_t result = sd_init();
+    
+    if (result == 0) {
+        CONS_OK("[STORAGE] === SD RE-INIT SUCCESS ===\r\n");
+    } else {
+        CONS_ERR("[STORAGE] === SD RE-INIT FAILED ===\r\n");
+    }
+    
+    return result;
 }
 
 // Read Single Block
@@ -491,48 +579,62 @@ uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count)
 {
     uint8_t res;
     if (count == 0) return 0;
-    // NOTE: count==1 is handled via CMD25 multi-block write below.
-    // CMD24 (single-block) is avoided because some cards in SPI mode
-    // accept CMD24 but don't persist the data (observed on this HW).
 
-    SD_CS_LOW();
-    if (sd_card_type != SD_TYPE_V2HC) sector *= 512;
+    /* Retry loop: up to 3 attempts for CMD25 failures */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        SD_CS_LOW();
+        if (sd_card_type != SD_TYPE_V2HC) sector *= 512;
 
-    CONS_DBG("[SD] WRITE-MULTI sector=%lu count=%lu ...", (unsigned long)sector, (unsigned long)count);
-    res = sd_send_cmd(CMD25, sector); // WRITE_MULTIPLE_BLOCK
-    if (res != 0x00) {
+        if (attempt == 0) {
+            CONS_DBG("[SD] WRITE-MULTI sector=%lu count=%lu ...", (unsigned long)sector, (unsigned long)count);
+        } else {
+            CONS_WARN("[SD] WRITE-MULTI retry #%d sector=%lu count=%lu ...", attempt, (unsigned long)sector, (unsigned long)count);
+        }
+        res = sd_send_cmd(CMD25, sector); // WRITE_MULTIPLE_BLOCK
+        if (res != 0x00) {
+            SD_CS_HIGH();
+            CONS_ERR("[SD] CMD25 failed (res=0x%02X)", res);
+            HAL_Delay(10);
+            if (sd_card_type != SD_TYPE_V2HC) sector /= 512;
+            continue;  /* Retry */
+        }
+
+        const uint8_t *p = buf;
+        uint32_t cnt = count;
+        do {
+            spi_send(0xFF);
+            spi_send(0xFC); // Multi-block data token
+            for (int i = 0; i < 512; i++) spi_send(*p++);
+            spi_send(0xFF); // CRC
+            spi_send(0xFF);
+            
+            res = spi_send(0xFF);
+            if ((res & 0x1F) != 0x05) { CONS_ERR("[SD] data err at block (res=0x%02X)", res); break; }
+            
+            uint32_t retry = 0;
+            while (spi_send(0xFF) == 0x00 && retry < 100000) retry++;
+            if (retry >= 100000) { CONS_ERR("[SD] busy timeout"); break; }
+        } while (--cnt);
+
+        spi_send(0xFD); // Stop token
+        uint32_t retry_wip = 0;
+        while (spi_send(0xFF) == 0x00 && retry_wip < 100000) retry_wip++;
+
         SD_CS_HIGH();
-        CONS_ERR("[SD] CMD25 failed (res=0x%02X)", res);
-        return 1;
+        spi_send(0xFF);
+
+        uint8_t ok = (cnt == 0) && (retry_wip < 100000);
+        CONS_DBG("[SD] WRITE-MULTI done (remaining=%lu, stop_busy=%lu)%s",
+                 (unsigned long)cnt, (unsigned long)retry_wip,
+                 ok ? "" : " WARN");
+
+        if (ok) return 0;
+        HAL_Delay(10);
+        if (sd_card_type != SD_TYPE_V2HC) sector /= 512;
     }
 
-    do {
-        spi_send(0xFF);
-        spi_send(0xFC); // Multi-block data token
-        for (int i = 0; i < 512; i++) spi_send(*buf++);
-        spi_send(0xFF); // CRC
-        spi_send(0xFF);
-        
-        res = spi_send(0xFF);
-        if ((res & 0x1F) != 0x05) { CONS_ERR("[SD] data err at block (res=0x%02X)", res); break; }
-        
-        uint32_t retry = 0;
-        while (spi_send(0xFF) == 0x00 && retry < 100000) retry++;
-        if (retry >= 100000) { CONS_ERR("[SD] busy timeout"); break; }
-    } while (--count);
-
-    spi_send(0xFD); // Stop token
-    uint32_t retry_wip = 0;
-    while (spi_send(0xFF) == 0x00 && retry_wip < 100000) retry_wip++;
-
-    SD_CS_HIGH();
-    spi_send(0xFF);
-
-    uint8_t ok = (count == 0) && (retry_wip < 100000);
-    CONS_DBG("[SD] WRITE-MULTI done (remaining=%lu, stop_busy=%lu)%s",
-             (unsigned long)count, (unsigned long)retry_wip,
-             ok ? "" : " WARN");
-    return ok ? 0 : 1;
+    CONS_ERR("[SD] WRITE-MULTI failed after 3 attempts");
+    return 1;
 }
 
 /***************************************************************
