@@ -683,6 +683,7 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         /* === CSV UPLOAD FROM SD CARD ===
          * Read the CSV file from SD card and send as text/csv.
          * This ensures Google Drive receives proper CSV format. */
+        FIL f;
         osMutexAcquire(sd_mutexHandle, osWaitForever);
         CONS_DBG("[MODEM] f_open CSV from SD: %s\r\n", fullpath);
         FRESULT fr = f_open(&f, fullpath, FA_READ);
