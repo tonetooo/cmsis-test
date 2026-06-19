@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 #include "credentials.h"
 #include "wdt.h"
 #include "console.h"
@@ -104,7 +105,22 @@ static HAL_StatusTypeDef Modem_BringUpNetwork(void) {
                  if (sscanf(p, "%d,%d", &rssi, &ber) >= 1) {
                     CONS_INFO("[MODEM] Signal Quality: RSSI=%d (0-31), BER=%d\r\n", rssi, ber);
                  } else {
-                    CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
+                    char* alt = modem_rx_buffer;
+                    while(*alt && !isdigit((unsigned char)*alt)) alt++;
+                    if (sscanf(alt, "%d,%d", &rssi, &ber) >= 1) {
+                        CONS_INFO("[MODEM] Signal Quality (alt): RSSI=%d, BER=%d\r\n", rssi, ber);
+                    } else {
+                        CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
+                    }
+                 }
+             } else {
+                 char* alt = modem_rx_buffer;
+                 while(*alt && !isdigit((unsigned char)*alt)) alt++;
+                 int rssi = 99, ber = 99;
+                 if (sscanf(alt, "%d,%d", &rssi, &ber) >= 1) {
+                     CONS_INFO("[MODEM] Signal Quality (fallback): RSSI=%d, BER=%d\r\n", rssi, ber);
+                 } else {
+                     CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
                  }
              }
         }
@@ -140,6 +156,30 @@ static HAL_StatusTypeDef Modem_BringUpNetwork(void) {
     }
 
     CONS_OK("[MODEM] PDP activo.\r\n");
+
+    HAL_Delay(8000);
+    WDT_Refresh();
+
+    /* Verify PDP is actually active and DNS is ready */
+    if (Modem_SendAT("AT+CGACT?", "1,1", 10000) != HAL_OK) {
+        CONS_WARN("[MODEM] PDP context not active, attempting re-activation...");
+        Modem_SendAT("AT+QIACT=1", "OK", 60000);
+        HAL_Delay(8000);
+        WDT_Refresh();
+    }
+
+    CONS_INFO("[MODEM] Sincronizando hora via NTP...\r\n");
+    if (Modem_SendAT("AT+QNTP=\"time.google.com\",1", "OK", 60000) == HAL_OK) {
+        CONS_OK("[MODEM] NTP sync completed\r\n");
+    } else {
+        CONS_WARN("[MODEM] NTP primary failed, trying pool.ntp.org...\r\n");
+        if (Modem_SendAT("AT+QNTP=\"pool.ntp.org\",1", "OK", 60000) == HAL_OK) {
+            CONS_OK("[MODEM] NTP sync completed (fallback)\r\n");
+        } else {
+            CONS_WARN("[MODEM] NTP sync failed, using system time\r\n");
+        }
+    }
+
     WDT_Refresh();
     return HAL_OK;
 }
@@ -784,9 +824,9 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         // El modem esta devolviendo los HEADERS directamente al UART porque activamos responseheader=1
         // Y el URC +QHTTPPOST: quizas viene DESPUES o ANTES.
         
-        // Si vemos "HTTP/1.1 200 OK" en el log, es EXITO, aunque +QHTTPPOST no se parsee bien.
-        if (strstr(modem_rx_buffer, "200 OK") != NULL || strstr(modem_rx_buffer, "HTTP/1.0 200 OK") != NULL) {
-             CONS_OK("[MODEM] 200 OK detected. Upload successful.\r\n");
+        // Si vemos codigo 2xx en la respuesta, es EXITO (200 OK, 201 Created, etc.)
+        if (strstr(modem_rx_buffer, "HTTP/1.1 2") != NULL || strstr(modem_rx_buffer, "HTTP/1.0 2") != NULL) {
+             CONS_OK("[MODEM] HTTP 2xx detected. Upload successful.\r\n");
              Modem_PowerOff();
              return HAL_OK;
         }
