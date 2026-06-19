@@ -1,38 +1,50 @@
 import sys
 import re
 import os
+from pathlib import Path
+
+def find_credentials_h():
+    """Buscar credentials.h relativo a la ubicación de este script.
+    
+    Estructura esperada:
+        awtas-backend/backend-drive/update_credentials.py
+        Core/Inc/credentials.h
+    
+    Desde el script: ../../Core/Inc/credentials.h
+    """
+    script_dir = Path(__file__).resolve().parent
+    
+    # Desde backend-drive/ subir 2 niveles hasta project root, luego bajar a Core/Inc/
+    candidates = [
+        script_dir / "../../Core/Inc/credentials.h",
+        script_dir / "../Core/Inc/credentials.h",          # si se copia a awtas-backend/
+        script_dir / "../../../Core/Inc/credentials.h",     # un nivel extra por si hay nesting
+    ]
+    
+    for p in candidates:
+        resolved = p.resolve()
+        if resolved.exists():
+            return str(resolved)
+    
+    # Fallback: buscar en todo el subtree hacia arriba
+    # Buscar hasta 5 niveles hacia arriba
+    for parent in [script_dir] + list(script_dir.parents)[:5]:
+        candidate = parent / "Core/Inc/credentials.h"
+        if candidate.exists():
+            return str(candidate)
+    
+    print(f"Error: credentials.h not found. Busqué desde: {script_dir}")
+    print("Candidates checked:")
+    for p in candidates:
+        print(f"  - {p.resolve()}")
+    sys.exit(1)
+
 
 def update_credentials(url):
     # Remover protocolo y slashes finales para el HOST
     host = url.replace("https://", "").replace("http://", "").strip("/")
     
-    # Rutas relativas desde backend/drive/backend-drive
-    # Asumiendo estructura: backend/drive/backend-drive -> ../../../CODIGOS ACTUALES/C CODES/AWTAS_DEFINITIVE/Core/Inc/credentials.h
-    # O ruta absoluta si es mas seguro
-    
-    # Intentar buscar la ruta relativa común
-    # Desde: /Users/pedroavendano/Desktop/LIND/AWTAS_REPO/backend/drive/backend-drive
-    # Hasta: /Users/pedroavendano/Desktop/LIND/CODIGOS ACTUALES/C CODES/AWTAS_DEFINITIVE/Core/Inc/credentials.h
-    
-    # Mejor usar ruta absoluta o relativa flexible
-    # Buscamos 'credentials.h' subiendo niveles
-    
-    target_file = None
-    
-    # Ruta absoluta conocida del usuario (hardcoded para este entorno específico)
-    possible_paths = [
-        "/Users/pedroavendano/Desktop/LIND/CODIGOS ACTUALES/C CODES/AWTAS_DEFINITIVE/Core/Inc/credentials.h",
-        "../../../CODIGOS ACTUALES/C CODES/AWTAS_DEFINITIVE/Core/Inc/credentials.h"
-    ]
-    
-    for p in possible_paths:
-        if os.path.exists(p):
-            target_file = p
-            break
-            
-    if not target_file:
-        print("Error: credentials.h not found in known paths.")
-        sys.exit(1)
+    target_file = find_credentials_h()
         
     print(f"Updating {target_file} with host: {host}")
     
