@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard">
+    <!-- Estado del servidor -->
+    <section class="status-section card">
+        <h2>Estado del Servidor</h2>
+        <div class="status-grid">
+            <div class="status-item">
+                <span class="label">Estado</span>
+                <span id="status-indicator" class="status-badge healthy">Operativo</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Google Drive</span>
+                <span id="drive-status" class="status-badge">{% if config.drive_configured %}Configurado{% else %}No configurado{% endif %}</span>
+            </div>
+            <div class="status-item">
+                <span class="label">API Key</span>
+                <span id="api-key-status" class="status-badge">{% if config.api_key_enabled %}Habilitada{% else %}Deshabilitada{% endif %}</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Subir archivo -->
+    <section class="upload-section card">
+        <h2>Subir Archivo CSV</h2>
+        <form id="uploadForm" class="upload-form">
+            <div class="form-group">
+                <label for="fileInput">Seleccionar archivo CSV:</label>
+                <input type="file" id="fileInput" name="file" accept=".csv" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="filenameInput">Nombre en Drive (opcional):</label>
+                <input type="text" id="filenameInput" name="filename" placeholder="data.csv">
+            </div>
+
+            {% if config.api_key_enabled %}
+            <div class="form-group">
+                <label for="apiKeyInput">API Key:</label>
+                <input type="password" id="apiKeyInput" name="apiKey" placeholder="Ingresa tu API Key" required>
+            </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-primary">Subir Archivo</button>
+        </form>
+        
+        <div id="uploadResult" class="upload-result hidden"></div>
+    </section>
+
+    <!-- Configuración -->
+    <section class="config-section card">
+        <h2>Configuración del Sensor</h2>
+        
+        <div class="config-actions">
+            <button id="getConfigBtn" class="btn btn-secondary">Obtener Configuración</button>
+            <button id="updateConfigBtn" class="btn btn-secondary">Actualizar Configuración</button>
+            <button id="deleteConfigBtn" class="btn btn-danger">Eliminar Configuración</button>
+        </div>
+
+        {% if config.api_key_enabled %}
+        <div class="form-group">
+            <label for="configApiKey">API Key:</label>
+            <input type="password" id="configApiKey" name="configApiKey" placeholder="Ingresa tu API Key">
+        </div>
+        {% endif %}
+
+        <div id="configOutput" class="config-output hidden">
+            <h3>Configuración Actual</h3>
+            <pre id="configContent"></pre>
+        </div>
+
+        <div id="configResult" class="config-result hidden"></div>
+    </section>
+
+    <!-- Documentación API -->
+    <section class="api-docs-section card">
+        <h2>Endpoints Disponibles</h2>
+        
+        <div class="endpoint">
+            <h3>GET /health</h3>
+            <p>Verificar estado del servidor</p>
+            <code>curl http://localhost:8080/health</code>
+        </div>
+
+        <div class="endpoint">
+            <h3>POST /upload</h3>
+            <p>Subir archivo CSV a Google Drive</p>
+            <code>curl -X POST -H "X-Api-Key: YOUR_KEY" --data-binary @file.csv "http://localhost:8080/upload?filename=data.csv"</code>
+        </div>
+
+        <div class="endpoint">
+            <h3>GET /config</h3>
+            <p>Obtener configuración del sensor</p>
+            <code>curl -H "X-Api-Key: YOUR_KEY" "http://localhost:8080/config"</code>
+        </div>
+
+        <div class="endpoint">
+            <h3>POST /config/init</h3>
+            <p>Inicializar o actualizar configuración</p>
+            <code>curl -X POST -H "X-Api-Key: YOUR_KEY" "http://localhost:8080/config/init"</code>
+        </div>
+
+        <div class="endpoint">
+            <h3>POST /config/delete</h3>
+            <p>Eliminar configuración</p>
+            <code>curl -X POST -H "X-Api-Key: YOUR_KEY" "http://localhost:8080/config/delete"</code>
+        </div>
+    </section>
+</div>
+{% endblock %}

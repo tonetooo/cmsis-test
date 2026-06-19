@@ -11,12 +11,14 @@
 #define CMD9    9    // SEND_CSD
 #define CMD10   10   // SEND_CID
 #define CMD12   12   // STOP_TRANSMISSION
+#define CMD13   13   // SEND_STATUS
 #define CMD16   16   // SET_BLOCKLEN
 #define CMD17   17   // READ_SINGLE_BLOCK
 #define CMD18   18   // READ_MULTIPLE_BLOCK
 #define CMD23   23   // SET_BLOCK_COUNT
 #define CMD24   24   // WRITE_BLOCK
 #define CMD25   25   // WRITE_MULTIPLE_BLOCK
+#define CMD42   42   // LOCK_UNLOCK
 #define CMD55   55   // APP_CMD
 #define CMD58   58   // READ_OCR
 #define ACMD41  41   // SD_SEND_OP_COND
@@ -30,10 +32,12 @@
 
 // Function Prototypes
 uint8_t sd_init(void);
+uint8_t sd_reinit(void);  // Full hardware re-initialization
 uint8_t sd_read_block(uint8_t *buf, uint32_t sector);
 uint8_t sd_write_block(const uint8_t *buf, uint32_t sector);
 uint8_t sd_read_blocks(uint8_t *buf, uint32_t sector, uint32_t count);
 uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count);
+uint32_t sd_get_sector_count(void);
 
 // High-level file operations
 int sd_mount(void);

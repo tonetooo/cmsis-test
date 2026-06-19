@@ -1,0 +1,131 @@
+{
+  "memories": [
+    {
+      "id": "init001proj",
+      "content": "AWTAS Backend es un sistema cloud para el sensor acelerómetro ADXL355 del proyecto LIND. Permite subir datos CSV a Google Drive y recibir configuración remota.",
+      "category": "context",
+      "timestamp": "2026-05-05T00:00:00",
+      "tags": [
+        "awtas",
+        "lind",
+        "adxl355",
+        "sensor",
+        "google-drive"
+      ],
+      "importance": 1.0,
+      "source": "agent",
+      "last_accessed": null,
+      "access_count": 0
+    },
+    {
+      "id": "init002arch",
+      "content": "Arquitectura del backend: Flask 2.3.3 con patrón de capas (routes -> services -> utils). Usa blueprint API y web frontend. DriveService implementa singleton para conexión a Google Drive API.",
+      "category": "architecture",
+      "timestamp": "2026-05-05T00:01:00",
+      "tags": [
+        "flask",
+        "architecture",
+        "singleton",
+        "blueprint",
+        "layered"
+      ],
+      "importance": 0.9,
+      "source": "agent",
+      "last_accessed": null,
+      "access_count": 0
+    },
+    {
+      "id": "init003api",
+      "content": "Endpoints principales: GET /, GET /health, POST /upload (CSV a Drive), GET /config, POST /config/init, POST /config/delete. Autenticación via header X-Api-Key.",
+      "category": "api",
+      "timestamp": "2026-05-05T00:02:00",
+      "tags": [
+        "endpoints",
+        "api",
+        "authentication",
+        "api-key"
+      ],
+      "importance": 0.9,
+      "source": "agent",
+      "last_accessed": null,
+      "access_count": 0
+    },
+    {
+      "id": "init004deploy",
+      "content": "Despliegue en servidor local puerto 8080 con opción de Cloudflare Tunnel. Requiere Python 3.8+ y credentials.json de Google Service Account.",
+      "category": "deployment",
+      "timestamp": "2026-05-05T00:03:00",
+      "tags": [
+        "deployment",
+        "cloudflare",
+        "port-8080",
+        "service-account"
+      ],
+      "importance": 0.8,
+      "source": "agent",
+      "last_accessed": "2026-05-09T22:20:44.718723",
+      "access_count": 2
+    },
+    {
+      "id": "init005config",
+      "content": "Configuración del sensor se almacena en AWTAS_CONFIG.TXT en Google Drive. Incluye sampling rate, trigger thresholds, operation mode. El firmware del sensor lee QUEUE.TXT para archivos pendientes de subida.",
+      "category": "configuration",
+      "timestamp": "2026-05-05T00:04:00",
+      "tags": [
+        "config",
+        "sampling-rate",
+        "trigger",
+        "queue"
+      ],
+      "importance": 0.8,
+      "source": "agent",
+      "last_accessed": "2026-05-09T22:20:44.718722",
+      "access_count": 2
+    },
+    {
+      "id": "init006mem",
+      "content": "Sistema de memoria del agente implementado con AgentMemory class. Persiste en JSON local con operaciones CRUD, búsqueda por categoría/tags/query, y generación de contexto para prompts. Basado en arquitectura Mem0-inspired.",
+      "category": "development",
+      "timestamp": "2026-05-06T00:00:00",
+      "tags": [
+        "agent-memory",
+        "mem0",
+        "persistence",
+        "crud",
+        "retrieval"
+      ],
+      "importance": 1.0,
+      "source": "agent",
+      "last_accessed": "2026-05-09T22:20:44.718717",
+      "access_count": 2
+    },
+    {
+      "id": "init007learn",
+      "content": "El proyecto fue refactorizado de un archivo monolítico main.py (207 líneas) a arquitectura modular con capas separadas. Esto mejoró mantenibilidad y testabilidad.",
+      "category": "learnings",
+      "timestamp": "2026-05-05T00:05:00",
+      "tags": [
+        "refactoring",
+        "monolith-to-modular",
+        "best-practices"
+      ],
+      "importance": 0.7,
+      "source": "agent",
+      "last_accessed": "2026-05-09T22:20:44.718720",
+      "access_count": 2
+    },
+    {
+      "id": "221ff61c07d3",
+      "content": "cambie el puerto a 5000",
+      "category": "development",
+      "timestamp": "2026-05-06T00:13:03.823382",
+      "tags": [],
+      "importance": 0.7,
+      "source": "agent",
+      "last_accessed": "2026-05-09T22:20:44.716857",
+      "access_count": 2
+    }
+  ],
+  "last_updated": "2026-05-09T22:20:44.722251",
+  "total_memories": 8
+}

@@ -1,0 +1,42 @@
+{
+  "enabled": true,
+  "model": "opencode/deepseek-v4-flash-free",
+  "reasoning_effort": "low",
+  "ravenInstructions": "",
+  "routeTools": [
+    "grep",
+    "glob",
+    "webfetch",
+    "fetch",
+    "websearch",
+    "bash"
+  ],
+  "routeToolKeywords": [],
+  "onDemandMcpDescriptionDetail": "full",
+  "onDemandMcpServers": {
+    "context7": {
+      "enabled": true,
+      "description": "Library/framework documentation lookup.",
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "exa": {
+      "enabled": true,
+      "description": "Live web search and webpage fetching.",
+      "type": "remote",
+      "url": "https://mcp.exa.ai/mcp"
+    },
+    "grep_app": {
+      "enabled": true,
+      "description": "Public GitHub code search and real-world examples.",
+      "type": "remote",
+      "url": "https://mcp.grep.app"
+    }
+  },
+  "excludeAgents": [],
+  "excludeTools": [],
+  "timeout": 600,
+  "stats": {
+    "bytes": 37226
+  }
+}

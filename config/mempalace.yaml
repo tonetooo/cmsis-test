@@ -1,0 +1,55 @@
+wing: hermes_a1_cmsis
+rooms:
+- name: fatfs
+  description: Files from FATFS/
+  keywords:
+  - fatfs
+  - fatfs
+- name: drivers
+  description: Files from Drivers/
+  keywords:
+  - drivers
+  - drivers
+- name: core
+  description: Files from Core/
+  keywords:
+  - core
+  - core
+- name: middlewares
+  description: Files from Middlewares/
+  keywords:
+  - middlewares
+  - middlewares
+- name: lib
+  description: Files from Lib/
+  keywords:
+  - lib
+  - lib
+- name: vaulted_codes
+  description: Files from vaulted_codes/
+  keywords:
+  - vaulted_codes
+  - vaulted_codes
+- name: awtas_backend
+  description: Files from awtas-backend/
+  keywords:
+  - awtas_backend
+  - awtas-backend
+- name: debug
+  description: Files from Debug/
+  keywords:
+  - debug
+  - debug
+- name: configuration
+  description: Files from config/
+  keywords:
+  - configuration
+  - config
+- name: backend
+  description: Files from api/
+  keywords:
+  - backend
+  - api
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

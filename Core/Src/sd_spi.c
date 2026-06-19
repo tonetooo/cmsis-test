@@ -1,9 +1,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "main.h"
 #include "Sd_spi.h"
 #include "ff_gen_drv.h"
+#include "console.h"
 
 /***************************************************************
  * 🔧 USER CONFIGURATION - MODIFY THIS FOR YOUR BOARD
@@ -22,10 +24,25 @@ extern SPI_HandleTypeDef hspi1;
  ***************************************************************/
 
 // FATFS Variables
-static FATFS fs;
-static FIL fil;
+FATFS fs;
+FIL fil;
 static char sd_path[4] = "0:/";
 static uint8_t sd_card_type = SD_TYPE_UNKNOWN;
+
+// Re-init counter (must be before sd_init() which uses it)
+static uint8_t reinit_count = 0;
+#define MAX_REINIT_ATTEMPTS 3
+
+static const char* sd_card_type_str(uint8_t t) {
+    switch (t) {
+        case SD_TYPE_UNKNOWN: return "UNKNOWN";
+        case SD_TYPE_V1:      return "SDv1";
+        case SD_TYPE_V2:      return "SDv2 (non-HC)";
+        case SD_TYPE_V2HC:    return "SDv2 HC/SDXC";
+        case SD_TYPE_MMC:     return "MMC";
+        default:              return "???";
+    }
+}
 
 // SPI Transfer Functions
 static uint8_t spi_send(uint8_t data)
@@ -83,52 +100,121 @@ static uint8_t sd_send_cmd(uint8_t cmd, uint32_t arg)
     return res;
 }
 
+// Read CSD register and return sector count
+uint32_t sd_get_sector_count(void)
+{
+    uint8_t csd[16];
+    SD_CS_LOW();
+    uint8_t res = sd_send_cmd(CMD9, 0);
+    if (res != 0x00) { SD_CS_HIGH(); spi_send(0xFF); return 0; }
+    uint16_t retry = 0;
+    do { res = spi_send(0xFF); retry++; } while (res != 0xFE && retry < 5000);
+    if (res != 0xFE) { SD_CS_HIGH(); spi_send(0xFF); return 0; }
+    for (int i = 0; i < 16; i++) csd[i] = spi_send(0xFF);
+    spi_send(0xFF); spi_send(0xFF); // CRC
+    SD_CS_HIGH(); spi_send(0xFF);
+    uint8_t ver = (csd[0] >> 6) & 0x03;
+    uint32_t sectors = 0;
+    if (ver == 1) {
+        uint32_t c_size = ((uint32_t)(csd[7] & 0x3F) << 16) | ((uint32_t)csd[8] << 8) | csd[9];
+        sectors = (c_size + 1) * 1024;
+    } else if (ver == 0) {
+        uint32_t c_size = ((uint32_t)(csd[6] & 0x03) << 10) | ((uint32_t)csd[7] << 2) | ((csd[8] >> 6) & 0x03);
+        uint32_t c_size_mult = ((csd[9] & 0x03) << 1) | ((csd[10] >> 7) & 0x01);
+        uint32_t read_bl_len = csd[5] & 0x0F;
+        uint32_t block_count = (c_size + 1) * (uint32_t)(1 << (c_size_mult + 2));
+        uint32_t block_len = (uint32_t)1 << read_bl_len;
+        sectors = (block_count * block_len) / 512;
+    }
+    CONS_DBG("[SD] CSD version=%d, sectors=%lu (~%lu MB)", ver, (unsigned long)sectors, (unsigned long)(sectors / 2048));
+    return sectors;
+}
+
 // SD Card Initialization
 uint8_t sd_init(void)
 {
     uint8_t res, retry = 0;
 
-    printf("[STORAGE] sd_init starting...\r\n");
-    HAL_Delay(150); // Give SD card more time to stabilize
+    printf("\r\n");
+    CONS_INFO("[STORAGE] === SD INIT ===\r\n");
+    CONS_INFO("[STORAGE] Step 1/7: Stabilizing...\r\n");
+    HAL_Delay(150);
 
     // Slow down SPI for initialization (< 400kHz)
-    // STM32F446 SPI1 is on APB2 (90MHz max). 90/256 = 351kHz.
+    CONS_INFO("[STORAGE] Step 2/7: SPI clock = 351 kHz (prescaler 256)\r\n");
     SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        printf("[STORAGE] HAL_SPI_Init failed\r\n");
+        CONS_ERR("[STORAGE] [FAIL] HAL_SPI_Init (slow) failed\r\n");
         return 1;
     }
+    CONS_OK("[STORAGE] SPI re-initialized at 351 kHz\r\n");
 
+    CONS_INFO("[STORAGE] Recovery: 80 dummy clocks with CS low...\r\n");
+    SD_CS_LOW();
+    for(int i=0; i<10; i++) {
+        spi_send(0xFF);
+    }
     SD_CS_HIGH();
-    // Send 100+ dummy clocks with CS high to enter SPI mode
+    spi_send(0xFF);
+
+    CONS_INFO("[STORAGE] Sending 80 dummy clocks (CS high) to enter SPI mode...\r\n");
     for(int i=0; i<20; i++) {
         spi_send(0xFF);
     }
 
+    // SPI register diagnostics (hidden unless debug on)
+    CONS_DBG("[STORAGE] [DIAG] SPI1->CR1 = 0x%08lX\r\n", SPI1->CR1);
+    CONS_DBG("[STORAGE] [DIAG] SPI1->CR2 = 0x%08lX\r\n", SPI1->CR2);
+    CONS_DBG("[STORAGE] [DIAG] SPI1->SR  = 0x%08lX\r\n", SPI1->SR);
+    CONS_DBG("[STORAGE] [DIAG] GPIOA->MODER = 0x%08lX\r\n", GPIOA->MODER);
+    CONS_DBG("[STORAGE] [DIAG] GPIOA->AFR[0] = 0x%08lX\r\n", GPIOA->AFR[0]);
+    CONS_DBG("[STORAGE] [DIAG] GPIOB->MODER = 0x%08lX\r\n", GPIOB->MODER);
+    CONS_DBG("[STORAGE] [DIAG] GPIOB->ODR = 0x%08lX\r\n", GPIOB->ODR);
+    CONS_DBG("[STORAGE] [DIAG] RCC->APB2ENR = 0x%08lX\r\n", RCC->APB2ENR);
+
+    // Manual toggle test (hidden unless debug on)
+    CONS_DBG("[STORAGE] [DIAG] Manual CS toggle test:\r\n");
+    SD_CS_HIGH(); spi_send(0xFF);
+    CONS_DBG("[STORAGE] [DIAG]   CS high -> spi_send(0xFF) = 0x%02X\r\n", spi_send(0xFF));
+    SD_CS_LOW();
+    CONS_DBG("[STORAGE] [DIAG]   CS low  -> spi_send(0xFF) = 0x%02X\r\n", spi_send(0xFF));
+    CONS_DBG("[STORAGE] [DIAG]   CS low  -> spi_send(0xFF) = 0x%02X\r\n", spi_send(0xFF));
+    SD_CS_HIGH();
+    CONS_DBG("[STORAGE] [DIAG]   CS high -> spi_send(0xFF) = 0x%02X\r\n", spi_send(0xFF));
+    CONS_DBG("[STORAGE] [DIAG] GPIOB->ODR after toggle = 0x%08lX\r\n", GPIOB->ODR);
+
     // CMD0: GO_IDLE_STATE
+    CONS_INFO("[STORAGE] Step 3/7: CMD0 (GO_IDLE_STATE)...\r\n");
+    CONS_DBG("[STORAGE] [DIAG] CS pin PB6 ODR before CMD0 loop = 0x%08lX\r\n", (unsigned long)GPIOB->ODR);
     retry = 0;
     do {
         SD_CS_HIGH();
-        spi_send(0xFF); // Sync clocks
+        spi_send(0xFF);
         
         SD_CS_LOW();
+        if (retry == 0) {
+            CONS_DBG("[STORAGE] [DIAG] CS=LO: PB6_ODR=0x%08lX (bit6=%d)\r\n",
+                   (unsigned long)GPIOB->ODR,
+                   (int)((GPIOB->ODR >> 6) & 1));
+        }
         res = sd_send_cmd(CMD0, 0);
-        SD_CS_HIGH(); // Must toggle CS for CMD0 retries on some cards
+        SD_CS_HIGH();
         
         if (res == 0x01) {
             break;
         }
         
         spi_send(0xFF);
-        HAL_Delay(10); // Short delay
+        HAL_Delay(10);
         retry++;
     } while (retry < 100);
 
     if (res != 0x01) {
-        // Try one more sequence with more sync clocks
-        printf("[STORAGE] CMD0 retry sequence...\r\n");
-        SD_CS_HIGH();
+        CONS_WARN("[STORAGE] [RETRY] CMD0 failed after %d tries, retry sequence with 100 sync clocks (CS low)...\r\n", retry);
+        SD_CS_LOW();
         for(int i=0; i<100; i++) spi_send(0xFF);
+        SD_CS_HIGH();
+        spi_send(0xFF);
         
         retry = 0;
         do {
@@ -142,27 +228,28 @@ uint8_t sd_init(void)
     }
 
     if (res != 0x01) {
-        printf("[STORAGE] SD Init Failed: CMD0 (Res=0x%02X after %d retries)\r\n", res, retry);
+        CONS_ERR("[STORAGE] [FAIL] CMD0 failed (Res=0x%02X after %d retries)\r\n", res, retry);
         SD_CS_HIGH();
         return 1;
     }
 
-    printf("[STORAGE] CMD0 Success (0x%02X) at retry %d\r\n", res, retry);
+    CONS_OK("[STORAGE] CMD0 OK (response 0x%02X after %d retries)\r\n", res, retry);
 
-    // CMD8: SEND_IF_COND (Required for SDHC/SDXC)
+    // CMD8: SEND_IF_COND
+    CONS_INFO("[STORAGE] Step 4/7: CMD8 (SEND_IF_COND)...\r\n");
     SD_CS_LOW();
     res = sd_send_cmd(CMD8, 0x1AA);
     if (res == 0x01) {
-        // V2.0 Card
         uint8_t ocr[4];
         for (int i = 0; i < 4; i++) ocr[i] = spi_send(0xFF);
         SD_CS_HIGH();
         spi_send(0xFF);
 
-        printf("[STORAGE] V2.0 Card detected, OCR: %02X %02X %02X %02X\r\n", ocr[0], ocr[1], ocr[2], ocr[3]);
+        CONS_INFO("[STORAGE] V2.0 card, OCR echo: %02X %02X %02X %02X\r\n", ocr[0], ocr[1], ocr[2], ocr[3]);
 
         if (ocr[2] == 0x01 && ocr[3] == 0xAA) {
-            // Valid V2.0 card
+            CONS_INFO("[STORAGE] Voltage range 2.7-3.6V, check pattern 0xAA => Valid SDv2\r\n");
+            CONS_INFO("[STORAGE] Step 5/7: ACMD41 (HCS)...\r\n");
             retry = 0;
             do {
                 SD_CS_LOW();
@@ -179,22 +266,31 @@ uint8_t sd_init(void)
                 HAL_Delay(10);
             } while (res != 0x00 && retry < 255);
 
+            CONS_INFO("[STORAGE] ACMD41 completed after %d tries (res=0x%02X)\r\n", retry, res);
+
             if (res == 0x00) {
-                // Check CCS (Capacity Status) in OCR
+                CONS_INFO("[STORAGE] Step 6/7: OCR (CMD58)...\r\n");
                 SD_CS_LOW();
                 if (sd_send_cmd(CMD58, 0) == 0x00) {
                     for (int i = 0; i < 4; i++) ocr[i] = spi_send(0xFF);
                     sd_card_type = (ocr[0] & 0x40) ? SD_TYPE_V2HC : SD_TYPE_V2;
+                    CONS_INFO("[STORAGE] OCR = %02X %02X %02X %02X, CCS bit = %d => %s\r\n",
+                           ocr[0], ocr[1], ocr[2], ocr[3],
+                           (ocr[0] & 0x40) ? 1 : 0,
+                           sd_card_type_str(sd_card_type));
                 }
                 SD_CS_HIGH();
                 spi_send(0xFF);
             }
+        } else {
+            CONS_WARN("[STORAGE] CMD8 pattern mismatch, retrying as V1 card\r\n");
+            goto v1_init;
         }
     } else {
         SD_CS_HIGH();
         spi_send(0xFF);
-        // V1.x Card or MMC
-        printf("[STORAGE] V1.x/MMC Card detected\r\n");
+        v1_init:
+        CONS_INFO("[STORAGE] Step 4b/7: V1.x/MMC Card path\r\n");
         retry = 0;
         do {
             SD_CS_LOW();
@@ -209,6 +305,7 @@ uint8_t sd_init(void)
 
             if (res == 0x00) {
                 sd_card_type = SD_TYPE_V1;
+                CONS_OK("[STORAGE] ACMD41 accepted => SDv1\r\n");
                 break;
             }
 
@@ -219,6 +316,7 @@ uint8_t sd_init(void)
 
             if (res == 0x00) {
                 sd_card_type = SD_TYPE_MMC;
+                CONS_OK("[STORAGE] CMD1 accepted => MMC\r\n");
                 break;
             }
             retry++;
@@ -227,29 +325,113 @@ uint8_t sd_init(void)
     }
 
     if (sd_card_type == SD_TYPE_UNKNOWN) {
-        printf("[STORAGE] SD Init Failed: Unknown card type (Res=0x%02X)\r\n", res);
+        CONS_ERR("[STORAGE] [FAIL] Unknown card type (res=0x%02X after %d retries)\r\n", res, retry);
         SD_CS_HIGH();
         return 1;
     }
 
+    // Check card status for write protection (CMD13 - SEND_STATUS)
+    CONS_INFO("[STORAGE] Step 6b/7: Checking write protect status (CMD13)...\r\n");
+    SD_CS_LOW();
+    if (sd_send_cmd(CMD13, 0) == 0x00) {
+        uint8_t status[2];
+        status[0] = spi_send(0xFF);
+        status[1] = spi_send(0xFF);
+        SD_CS_HIGH();
+        spi_send(0xFF);
+        
+        // Status bits: bit 15=WP (write protect), bit 14=card is locked
+        bool wp = (status[0] & 0x80) != 0;
+        bool locked = (status[0] & 0x40) != 0;
+        CONS_INFO("[STORAGE] Card status: 0x%02X%02X (WP=%d, LOCKED=%d)\r\n", 
+                  status[0], status[1], wp, locked);
+        
+        if (wp || locked) {
+            CONS_ERR("[STORAGE] [FAIL] SD card is WRITE PROTECTED or LOCKED!\r\n");
+            CONS_ERR("[STORAGE] Check physical write-protect switch on SD card.\r\n");
+            // Try to unlock via CMD42 if locked
+            if (locked) {
+                CONS_WARN("[STORAGE] Attempting to unlock card via CMD42...\r\n");
+                SD_CS_LOW();
+                uint8_t unlock_res = sd_send_cmd(CMD42, 0); // Unlock card (no password)
+                SD_CS_HIGH();
+                spi_send(0xFF);
+                if (unlock_res == 0x00) {
+                    CONS_OK("[STORAGE] CMD42 unlock succeeded, re-checking status...\r\n");
+                    // Re-check status
+                    SD_CS_LOW();
+                    if (sd_send_cmd(CMD13, 0) == 0x00) {
+                        status[0] = spi_send(0xFF);
+                        status[1] = spi_send(0xFF);
+                        SD_CS_HIGH();
+                        spi_send(0xFF);
+                        locked = (status[0] & 0x40) != 0;
+                        if (!locked) {
+                            CONS_OK("[STORAGE] Card unlocked successfully!\r\n");
+                        } else {
+                            CONS_ERR("[STORAGE] Card still locked after CMD42\r\n");
+                        }
+                    }
+                } else {
+                    CONS_ERR("[STORAGE] CMD42 unlock failed (res=0x%02X)\r\n", unlock_res);
+                }
+            }
+        }
+    } else {
+        SD_CS_HIGH();
+        spi_send(0xFF);
+        CONS_WARN("[STORAGE] CMD13 failed, skipping write-protect check\r\n");
+    }
+
     // Set block size to 512 bytes (for non-SDHC cards)
     if (sd_card_type != SD_TYPE_V2HC) {
+        CONS_INFO("[STORAGE] SDHC not detected, setting block size to 512 via CMD16\r\n");
         sd_send_cmd(CMD16, 512);
     }
 
     SD_CS_HIGH();
     spi_send(0xFF);
 
-    printf("[STORAGE] SD Card Initialized. Type: %d\r\n", sd_card_type);
-
-    // Speed up SPI for data transfer
-    // 90MHz / 8 = 11.25MHz (safe for most SD cards)
-    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8; 
+    CONS_INFO("[STORAGE] Step 7/7: Speed up SPI for data transfer (5.625 MHz)...\r\n");
+    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; 
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        printf("[STORAGE] Final SPI Init failed\r\n");
+        CONS_ERR("[STORAGE] [FAIL] Final SPI init at 5.625 MHz failed\r\n");
+    } else {
+        CONS_OK("[STORAGE] SPI running at 5.625 MHz\r\n");
     }
+    CONS_INFO("[STORAGE] === SD INIT DONE: %s ===\r\n", sd_card_type_str(sd_card_type));
+    
+    // Reset re-init counter on successful fresh init
+    reinit_count = 0;
 
     return 0;
+}
+
+// Full hardware re-initialization (for recovery from write errors / FR_DENIED)
+
+uint8_t sd_reinit(void)
+{
+    if (reinit_count >= MAX_REINIT_ATTEMPTS) {
+        CONS_ERR("[STORAGE] Max re-init attempts (%d) reached — giving up\r\n", MAX_REINIT_ATTEMPTS);
+        return 1;
+    }
+    
+    reinit_count++;
+    CONS_WARN("[STORAGE] === SD RE-INIT START (attempt %d/%d) ===\r\n", reinit_count, MAX_REINIT_ATTEMPTS);
+    
+    // Reset card type to force full re-detection
+    sd_card_type = SD_TYPE_UNKNOWN;
+    
+    // Re-run full init sequence
+    uint8_t result = sd_init();
+    
+    if (result == 0) {
+        CONS_OK("[STORAGE] === SD RE-INIT SUCCESS ===\r\n");
+    } else {
+        CONS_ERR("[STORAGE] === SD RE-INIT FAILED ===\r\n");
+    }
+    
+    return result;
 }
 
 // Read Single Block
@@ -314,9 +496,11 @@ uint8_t sd_write_block(const uint8_t *buf, uint32_t sector)
         sector *= 512;
     }
 
+    CONS_DBG("[SD] WRITE sector=%lu ...", (unsigned long)sector);
     res = sd_send_cmd(CMD24, sector);
     if (res != 0x00) {
         SD_CS_HIGH();
+        CONS_ERR("[SD] CMD24 failed (res=0x%02X)", res);
         return 1;
     }
 
@@ -341,19 +525,21 @@ uint8_t sd_write_block(const uint8_t *buf, uint32_t sector)
     res = spi_send(0xFF);
     if ((res & 0x1F) != 0x05) {
         SD_CS_HIGH();
+        CONS_ERR("[SD] data response err (res=0x%02X)", res);
         return 2;
     }
 
-    // Wait for card to finish
+    // Wait for card to finish (up to 500ms)
     retry = 0;
     do {
         res = spi_send(0xFF);
         retry++;
-    } while (res == 0x00 && retry < 50000);
+    } while (res == 0x00 && retry < 100000);
 
     SD_CS_HIGH();
     spi_send(0xFF);
 
+    CONS_DBG("[SD] WRITE OK (busy=%u)", retry);
     return 0;
 }
 
@@ -392,40 +578,109 @@ uint8_t sd_read_blocks(uint8_t *buf, uint32_t sector, uint32_t count)
 uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count)
 {
     uint8_t res;
-    if (count == 1) return sd_write_block(buf, sector);
+    if (count == 0) return 0;
 
-    SD_CS_LOW();
-    if (sd_card_type != SD_TYPE_V2HC) sector *= 512;
+    /* Retry loop: up to 3 attempts for CMD25 failures */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        SD_CS_LOW();
+        if (sd_card_type != SD_TYPE_V2HC) sector *= 512;
 
-    res = sd_send_cmd(CMD25, sector); // WRITE_MULTIPLE_BLOCK
-    if (res != 0x00) {
+        if (attempt == 0) {
+            CONS_DBG("[SD] WRITE-MULTI sector=%lu count=%lu ...", (unsigned long)sector, (unsigned long)count);
+        } else {
+            CONS_WARN("[SD] WRITE-MULTI retry #%d sector=%lu count=%lu ...", attempt, (unsigned long)sector, (unsigned long)count);
+        }
+        res = sd_send_cmd(CMD25, sector); // WRITE_MULTIPLE_BLOCK
+        if (res != 0x00) {
+            SD_CS_HIGH();
+            CONS_ERR("[SD] CMD25 failed (res=0x%02X)", res);
+            HAL_Delay(10);
+            if (sd_card_type != SD_TYPE_V2HC) sector /= 512;
+            continue;  /* Retry */
+        }
+
+        const uint8_t *p = buf;
+        uint32_t cnt = count;
+        do {
+            spi_send(0xFF);
+            spi_send(0xFC); // Multi-block data token
+            for (int i = 0; i < 512; i++) spi_send(*p++);
+            spi_send(0xFF); // CRC
+            spi_send(0xFF);
+            
+            res = spi_send(0xFF);
+            if ((res & 0x1F) != 0x05) { CONS_ERR("[SD] data err at block (res=0x%02X)", res); break; }
+            
+            uint32_t retry = 0;
+            while (spi_send(0xFF) == 0x00 && retry < 100000) retry++;
+            if (retry >= 100000) { CONS_ERR("[SD] busy timeout"); break; }
+        } while (--cnt);
+
+        spi_send(0xFD); // Stop token
+        uint32_t retry_wip = 0;
+        while (spi_send(0xFF) == 0x00 && retry_wip < 100000) retry_wip++;
+
         SD_CS_HIGH();
-        return 1;
+        spi_send(0xFF);
+
+        uint8_t ok = (cnt == 0) && (retry_wip < 100000);
+        CONS_DBG("[SD] WRITE-MULTI done (remaining=%lu, stop_busy=%lu)%s",
+                 (unsigned long)cnt, (unsigned long)retry_wip,
+                 ok ? "" : " WARN");
+
+        if (ok) return 0;
+        HAL_Delay(10);
+        if (sd_card_type != SD_TYPE_V2HC) sector /= 512;
     }
 
-    do {
-        spi_send(0xFF);
-        spi_send(0xFC); // Multi-block data token
-        for (int i = 0; i < 512; i++) spi_send(*buf++);
-        spi_send(0xFF); // CRC
-        spi_send(0xFF);
-        
-        res = spi_send(0xFF);
-        if ((res & 0x1F) != 0x05) break;
-        
-        uint32_t retry = 0;
-        while (spi_send(0xFF) == 0x00 && retry < 50000) retry++;
-        if (retry >= 50000) break;
-    } while (--count);
+    CONS_ERR("[SD] WRITE-MULTI failed after 3 attempts");
+    return 1;
+}
 
-    spi_send(0xFD); // Stop token
-    uint32_t retry = 0;
-    while (spi_send(0xFF) == 0x00 && retry < 50000) retry++;
+/***************************************************************
+ * FORMAT VERIFICATION HELPERS
+ ***************************************************************/
 
-    SD_CS_HIGH();
-    spi_send(0xFF);
+// Quick check: read sector 0 and validate FAT32 BPB signature
+// Returns 1 if sector looks like valid FAT32, 0 otherwise
+static int sd_check_sector0_fat32(void)
+{
+    uint8_t buf[512];
+    if (sd_read_block(buf, 0) != 0) {
+        CONS_WARN("[STORAGE] [WARN] Cannot read sector 0 for verification\r\n");
+        return 0;
+    }
 
-    return (count == 0) ? 0 : 1;
+    // Check 0x55AA signature
+    if (buf[510] != 0x55 || buf[511] != 0xAA) {
+        CONS_DBG("[STORAGE] [VERIFY] Sector 0: no 0x55AA signature\r\n");
+        return 0;
+    }
+
+    // Check JmpBoot (should be 0xEB or 0xE9 for valid FAT boot sector)
+    if (buf[0] != 0xEB && buf[0] != 0xE9) {
+        CONS_DBG("[STORAGE] [VERIFY] Sector 0: invalid JmpBoot (0x%02X)\r\n", buf[0]);
+        return 0;
+    }
+
+    // Check BytesPerSector (must be 512 = 0x0200 little-endian)
+    uint16_t bps = buf[11] | ((uint16_t)buf[12] << 8);
+    if (bps != 512) {
+        CONS_DBG("[STORAGE] [VERIFY] Sector 0: bad BytesPerSector (%u)\r\n", bps);
+        return 0;
+    }
+
+    // Check FATSz32 (must be > 0 for FAT32)
+    uint32_t fatsz32 = (uint32_t)buf[36] | ((uint32_t)buf[37] << 8)
+                     | ((uint32_t)buf[38] << 16) | ((uint32_t)buf[39] << 24);
+    if (fatsz32 == 0) {
+        CONS_DBG("[STORAGE] [VERIFY] Sector 0: FATSz32=0 (not FAT32?)\r\n");
+        return 0;
+    }
+
+    CONS_DBG("[STORAGE] [VERIFY] Sector 0: valid FAT32 (FATSz32=%lu, BPS=%u)\r\n",
+           (unsigned long)fatsz32, bps);
+    return 1;
 }
 
 /***************************************************************
@@ -437,46 +692,149 @@ int sd_mount(void)
 {
     FRESULT res;
 
-    printf("[STORAGE] Calling sd_init...\r\n");
-    if (sd_init() != 0) {
-        printf("[STORAGE] SD Card Init Failed\r\n");
-        return -1;
+    CONS_INFO("[STORAGE] === MOUNT START ===\r\n");
+    CONS_INFO("[STORAGE] Phase 1/4: SD hardware init...\r\n");
+
+    /* Retry loop: sometimes SD needs a second power-on attempt */
+    int sd_retries = 3;
+    int sd_ok = 0;
+    for (int attempt = 1; attempt <= sd_retries; attempt++) {
+        CONS_WARN("[STORAGE] [RETRY] SD init attempt %d/%d\r\n", attempt, sd_retries);
+        if (sd_init() == 0) {
+            sd_ok = 1;
+            CONS_OK("[STORAGE] [OK] SD init succeeded on attempt %d\r\n", attempt);
+            break;
+        }
+        if (attempt < sd_retries) {
+            CONS_WARN("[STORAGE] [RETRY] De-initing SPI1 and toggling CS 20x to wake SD...\r\n");
+            /* Fully de-init SPI to clear any stuck state */
+            HAL_SPI_DeInit(&SD_SPI_HANDLE);
+            HAL_Delay(100);
+            /* Toggle CS 20x rapidly to wake card from glitch state */
+            for (int t = 0; t < 20; t++) {
+                SD_CS_LOW();
+                HAL_Delay(10);
+                SD_CS_HIGH();
+                HAL_Delay(10);
+            }
+            /* Re-init SPI at slow speed */
+            SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+            HAL_SPI_Init(&SD_SPI_HANDLE);
+            CONS_WARN("[STORAGE] [RETRY] Waiting 500ms before next attempt...\r\n");
+            HAL_Delay(500);
+        }
     }
 
-    printf("[STORAGE] SD Init OK, linking driver...\r\n");
+    if (!sd_ok) {
+        CONS_ERR("[STORAGE] [FAIL] SD hardware init failed after %d attempts\r\n", sd_retries);
+        return -1;
+    }
+    CONS_OK("[STORAGE] SD hardware init complete\r\n");
 
-    // Link the SD driver to FATFS
+    CONS_INFO("[STORAGE] Phase 2/4: Linking FatFs disk driver...\r\n");
     extern const Diskio_drvTypeDef USER_Driver;
     if (FATFS_LinkDriver(&USER_Driver, sd_path) != 0)
     {
-        printf("[STORAGE] Failed to link SD driver\r\n");
+        CONS_ERR("[STORAGE] [FAIL] FATFS_LinkDriver failed\r\n");
         return -1;
     }
+    CONS_OK("[STORAGE] Driver linked at path '%s'\r\n", sd_path);
 
-    printf("[STORAGE] Driver linked, calling f_mount...\r\n");
-
+    CONS_INFO("[STORAGE] Phase 3/4: Mounting filesystem (f_mount)...\r\n");
     res = f_mount(&fs, sd_path, 1);
 
     if (res != FR_OK) {
-        printf("[STORAGE] Mount failed (%d), trying to format...\r\n", res);
+        CONS_WARN("[STORAGE] [WARN] f_mount returned FRESULT=%d\r\n", res);
+        CONS_WARN("[STORAGE]        => %s\r\n",
+               res == FR_NO_FILESYSTEM ? "NO FILESYSTEM (needs format)" :
+               res == FR_NOT_READY     ? "NOT READY (card removed?)" :
+               res == FR_DISK_ERR      ? "DISK ERROR (hardware issue)" :
+               res == FR_INT_ERR       ? "INTERNAL ERROR" :
+               res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
+                                          "UNKNOWN ERROR");
 
-        // Try to format the card
-        BYTE work[4096];
-        res = f_mkfs(sd_path, FM_FAT32, 0, work, sizeof(work));
+        // --- Pre-format check: read sector 0 to see if BPB exists ---
+        CONS_INFO("[STORAGE] Phase 3a: Checking sector 0 before format...\r\n");
+        if (sd_check_sector0_fat32()) {
+            CONS_WARN("[STORAGE] [WARN] Sector 0 has valid FAT32 BPB, but f_mount failed.\r\n");
+            CONS_WARN("[STORAGE] [WARN] Skipping format (card may have corrupted FAT).\r\n");
+            // Don't format, return the original error
+        } else {
+            CONS_INFO("[STORAGE] Phase 3b: Direct write/read test on sector 0...\r\n");
+            {
+                uint8_t test_w[512], test_r[512];
+                memset(test_w, 0xA5, sizeof(test_w));
+                test_w[0] = 'H'; test_w[1] = 'E'; test_w[2] = 'R'; test_w[3] = 'M';
+                test_w[4] = 'E'; test_w[5] = 'S'; test_w[510] = 0x55; test_w[511] = 0xAA;
+                CONS_INFO("[STORAGE] [TEST] Writing test pattern to sector 0 (CMD25, count=1)...\r\n");
+                uint8_t wr = sd_write_blocks((const uint8_t*)test_w, 0, 1);
+                CONS_INFO("[STORAGE] [TEST] sd_write_blocks returned %d\r\n", wr);
+                CONS_INFO("[STORAGE] [TEST] Reading sector 0 back...\r\n");
+                uint8_t rr = sd_read_block(test_r, 0);
+                CONS_INFO("[STORAGE] [TEST] sd_read_block returned %d\r\n", rr);
+                int match = (memcmp(test_w, test_r, 512) == 0);
+                int sig   = (test_r[510] == 0x55 && test_r[511] == 0xAA);
+                CONS_INFO("[STORAGE] [TEST] Data match=%d, 0x55AA=%d, test_r[0..5]=%c%c%c%c%c%c\r\n",
+                       match, sig, test_r[0], test_r[1], test_r[2],
+                       test_r[3], test_r[4], test_r[5]);
+            }
 
-        if (res == FR_OK) {
-            printf("[STORAGE] Card formatted, mounting again...\r\n");
-            res = f_mount(&fs, sd_path, 1);
+            CONS_INFO("[STORAGE] Phase 3c: Attempting auto-format (f_mkfs)...\r\n");
+            CONS_INFO("[STORAGE] [INFO] Work buffer = 4096 bytes (stack-allocated)\r\n");
+
+            f_mount(NULL, sd_path, 0); // Unmount before format
+
+            BYTE work[4096];
+            CONS_INFO("[STORAGE] [INFO] Trying FM_FAT32 | FM_SFD (superfloppy)...\r\n");
+            res = f_mkfs(sd_path, FM_FAT32 | FM_SFD, 0, work, sizeof(work));
+
+            if (res == FR_OK) {
+                CONS_OK("[STORAGE] [OK] Format returned FR_OK\r\n");
+
+                // --- Post-format verification: read back sector 0 ---
+                CONS_INFO("[STORAGE] [INFO] Verifying format: reading sector 0 back...\r\n");
+                if (sd_check_sector0_fat32()) {
+                    CONS_OK("[STORAGE] [OK] Format write verified!\r\n");
+                } else {
+                    CONS_ERR("[STORAGE] [FAIL] Sector 0 verify FAILED after format\r\n");
+                }
+
+                CONS_INFO("[STORAGE] [INFO] Remounting...\r\n");
+                res = f_mount(&fs, sd_path, 1);
+                if (res != FR_OK) {
+                    CONS_ERR("[STORAGE] [FAIL] Remount after format failed: FRESULT=%d\r\n", res);
+                }
+            } else {
+                CONS_ERR("[STORAGE] [FAIL] Format returned FRESULT=%d\r\n", res);
+                CONS_ERR("[STORAGE]        => %s\r\n",
+                       res == FR_NOT_READY     ? "NOT READY" :
+                       res == FR_DISK_ERR      ? "DISK ERROR" :
+                       res == FR_MKFS_ABORTED  ? "MKFS ABORTED (wrong param)" :
+                       res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
+                                                  "UNKNOWN ERROR");
+            }
         }
     }
 
     if (res != FR_OK) {
-        printf("[STORAGE] Mount Failed: %d\r\n", res);
+        CONS_ERR("[STORAGE] [FAIL] Mount failed after all attempts (FRESULT=%d)\r\n", res);
         FATFS_UnLinkDriver(sd_path);
         return -1;
     }
 
-    printf("[STORAGE] SD Card Mounted\r\n");
+    CONS_OK("[STORAGE] Filesystem mounted successfully\r\n");
+
+    // Show volume info
+    FATFS* ptfs;
+    DWORD fre_clust, fre_sect, tot_sect;
+    if (f_getfree(sd_path, &fre_clust, &ptfs) == FR_OK) {
+        tot_sect = (ptfs->n_fatent - 2) * ptfs->csize;
+        fre_sect = fre_clust * ptfs->csize;
+        CONS_INFO("[STORAGE] Total: ~%lu MB, Free: ~%lu MB\r\n",
+               (unsigned long)(tot_sect / 2048),
+               (unsigned long)(fre_sect / 2048));
+    }
+    CONS_INFO("[STORAGE] === MOUNT DONE ===\r\n");
     return 0;
 }
 
@@ -484,41 +842,41 @@ int sd_mount(void)
 void sd_unmount(void)
 {
     f_mount(NULL, sd_path, 0);
-    printf("[STORAGE] SD Card Unmounted\r\n");
+    CONS_INFO("[STORAGE] SD Card Unmounted\r\n");
 }
 
 // Write/Create File
 int sd_write_file(const char *filename, const char *data)
 {
-    printf("[STORAGE] Trying to open file: %s\r\n", filename);
-    printf("[STORAGE] FATFS mounted at: %s\r\n", sd_path);
+    UINT bw;
+    CONS_INFO("[STORAGE] === FILE WRITE: \"%s\" ===\r\n", filename);
+    CONS_INFO("[STORAGE] Data size = %zu bytes\r\n", strlen(data));
 
     FRESULT res = f_open(&fil, filename, FA_CREATE_ALWAYS | FA_WRITE);
 
-    printf("[STORAGE] f_open returned: %d\r\n", res);
-
     if (res != FR_OK) {
-        printf("[STORAGE] Open Failed: %d\r\n", res);
-
-        // Try with full path
+        CONS_WARN("[STORAGE] [WARN] f_open('%s') = %d, trying full path \"%swater_log.csv\"...\r\n", filename, res, sd_path);
         char fullpath[50];
         sprintf(fullpath, "%swater_log.csv", sd_path);
-        printf("[STORAGE] Trying full path: %s\r\n", fullpath);
         res = f_open(&fil, fullpath, FA_CREATE_ALWAYS | FA_WRITE);
-        printf("[STORAGE] f_open with full path returned: %d\r\n", res);
-
-        if (res != FR_OK)
+        CONS_INFO("[STORAGE] f_open full path => %d\r\n", res);
+        if (res != FR_OK) {
+            CONS_ERR("[STORAGE] [FAIL] Could not open any path for writing\r\n");
             return -1;
+        }
     }
 
-    UINT bw;
     res = f_write(&fil, data, strlen(data), &bw);
+    CONS_INFO("[STORAGE] f_write => %d, bytes_written=%u\r\n", res, bw);
+
     f_close(&fil);
+    CONS_INFO("[STORAGE] f_close done\r\n");
 
     if (res == FR_OK) {
-        printf("[STORAGE] Written %u bytes to %s\r\n", bw, filename);
+        CONS_OK("[STORAGE] [OK] Wrote %u bytes to '%s'\r\n", bw, filename);
         return 0;
     }
+    CONS_ERR("[STORAGE] [FAIL] Write failed\r\n");
     return -1;
 }
 
@@ -527,7 +885,7 @@ int sd_read_file(const char *filename, char *buffer, uint32_t size, UINT *bytes_
 {
     FRESULT res = f_open(&fil, filename, FA_READ);
     if (res != FR_OK) {
-        printf("[STORAGE] Read Failed: %d\r\n", res);
+        CONS_ERR("[STORAGE] [FAIL] Read '%s': %d\r\n", filename, res);
         return -1;
     }
 
@@ -541,17 +899,24 @@ int sd_read_file(const char *filename, char *buffer, uint32_t size, UINT *bytes_
 // Append to File
 int sd_append_file(const char *filename, const char *data)
 {
+    CONS_INFO("[STORAGE] === FILE APPEND: \"%s\" (%zu bytes) ===\r\n", filename, strlen(data));
     FRESULT res = f_open(&fil, filename, FA_OPEN_APPEND | FA_WRITE);
     if (res != FR_OK) {
-        printf("[STORAGE] Append Failed: %d\r\n", res);
+        CONS_ERR("[STORAGE] [FAIL] f_open(APPEND) = %d\r\n", res);
         return -1;
     }
 
     UINT bw;
     res = f_write(&fil, data, strlen(data), &bw);
+    CONS_INFO("[STORAGE] f_write => %d, bytes_written=%u\r\n", res, bw);
     f_close(&fil);
 
-    return (res == FR_OK) ? 0 : -1;
+    if (res == FR_OK) {
+        CONS_OK("[STORAGE] [OK] Appended %u bytes\r\n", bw);
+        return 0;
+    }
+    CONS_ERR("[STORAGE] [FAIL] Append write failed\r\n");
+    return -1;
 }
 
 // List Files
@@ -559,14 +924,23 @@ void sd_list_files(void)
 {
     DIR dir;
     FILINFO fno;
+    uint32_t total = 0;
 
+    CONS_INFO("[STORAGE] === LISTING FILES ===\r\n");
     if (f_opendir(&dir, "/") == FR_OK) {
-        printf("\n[STORAGE] Files on SD Card:\r\n");
-        printf("---------------------------\r\n");
         while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0) {
-            printf("  %s (%lu bytes)\r\n", fno.fname, fno.fsize);
+            CONS("  %-20s %10lu bytes\r\n", fno.fname, (unsigned long)fno.fsize);
+            total++;
         }
-        printf("---------------------------\r\n");
+        if (total == 0) {
+            CONS("  (empty directory)\r\n");
+        } else {
+            CONS("  --------------------------\r\n");
+            CONS("  TOTAL: %lu files\r\n", (unsigned long)total);
+        }
         f_closedir(&dir);
+    } else {
+        CONS_ERR("[STORAGE] [FAIL] f_opendir failed\r\n");
     }
+    CONS_INFO("[STORAGE] === LIST END ===\r\n");
 }

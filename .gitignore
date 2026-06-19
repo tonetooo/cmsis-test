@@ -6,3 +6,14 @@
 **/*.d
 **/*.su
 **/*.cyclo
+*.elf
+*.hex
+*.bin
+*.map
+vaulted_codes/
+credentials.json
+*.key
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json

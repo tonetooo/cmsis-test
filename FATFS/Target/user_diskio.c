@@ -34,6 +34,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include <string.h>
+#include <stdio.h>
 #include "ff_gen_drv.h"
 #include "Sd_spi.h"
 
@@ -177,8 +178,10 @@ DRESULT USER_ioctl (
             res = RES_OK;
             break;
         case GET_SECTOR_COUNT:
-            // This is a bit tricky without CSD, but for many SD cards we can skip or return a dummy if not needed by FatFs for formatting
-            res = RES_ERROR; 
+            *(DWORD*)buff = sd_get_sector_count();
+            printf("[DISKIO] USER_ioctl(GET_SECTOR_COUNT) => %lu sectors (~%lu MB)\r\n",
+                   (unsigned long)*(DWORD*)buff, (unsigned long)(*(DWORD*)buff / 2048));
+            res = RES_OK;
             break;
         case GET_SECTOR_SIZE:
             *(WORD*)buff = 512;
