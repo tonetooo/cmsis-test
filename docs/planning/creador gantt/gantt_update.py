@@ -432,7 +432,7 @@ ws.page_setup.paperSize = ws.PAPERSIZE_A3
 
 # ── Save ────────────────────────────────────────────────────────────────
 wb.save(DST)
-print(f"✅ Saved → {DST}")
+print(f"OK Saved -> {DST}")
 print(f"   Sheet: {ws.title}")
 print(f"   Timelines: {NUM_MONTHS} columns")
 print(f"   Tasks/rows: {len(ROWS)}")
