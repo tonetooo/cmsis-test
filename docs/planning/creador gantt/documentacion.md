@@ -5,7 +5,7 @@
 * **RTOS:** FreeRTOS
 * **Sensor:** ADXL355
 * **Conectividad:** Quectel EC25
-* **Versión:** Documentación Técnica v1.1.0
+* **Versión:** Documentación Técnica v1.2.0
 * **Autor:** Antonio Avendaño Sanhueza
 * **Organización:** LIND Engineering
 * **Fecha/Ubicación:** Mayo 2026 Concepción, Chile
@@ -26,6 +26,21 @@
 ---
 
 # Índice
+1. **Visión General**
+2. **Hardware:** sistema, hardware, evolución desde AWTAS.
+3. **Arquitectura de Software:** pines, periféricos, NVIC, niveles eléctricos. tareas, colas, eventos, flujo de datos.
+4. **Gestión de Memoria:** mapa de memoria, Heap_4, dimensionamiento de cola.
+5. **Estado DMA y FPU:** configuración actual, impacto, recomendaciones.
+6. **Correcciones Aplicadas:** 13 bugs identificados y resueltos (8 nuevos).
+7. **Análisis Comparativo:** 4 versiones del proyecto.
+8. **Evaluación UniKnect SDK:** viabilidad técnica.
+9. **Actividades Pendientes:** roadmap desde evaluación del prototipo.
+10. **Referencia API:** documentación Doxygen.
+11. **Compilación y Flash**.
+12. **Comandos CLI**.
+13. **Estructura del Proyecto**.
+14. **Rutas de Upload**.
+15. **Conocidos / Limitaciones**.
 
 1. **Visión General**
 2. **Hardware:** sistema, hardware, evolución desde AWTAS.

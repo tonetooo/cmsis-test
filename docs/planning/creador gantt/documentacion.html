@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HERMES A1 &mdash; Documentacion Tecnica v1.2.0</title>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+  --text: #c9d1d9; --muted: #8b949e; --bright: #f0f6fc;
+  --accent: #58a6ff; --accent2: #79c0ff;
+  --green: #238636; --yellow: #9e6a03; --blue: #1f6feb;
+  --border: #30363d;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;font-size:15px}
+a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2);text-decoration:underline}
+.ctn{max-width:1000px;margin:0 auto;padding:20px 24px}
+header{text-align:center;padding:48px 24px 32px;border-bottom:1px solid var(--border)}
+header h1{font-size:2.2em;color:var(--bright);margin-bottom:8px;letter-spacing:-.5px}
+header .sub{color:var(--accent);font-size:1.1em;margin-bottom:4px}
+header .meta{color:var(--muted);font-size:.9em}
+h2{color:var(--accent);font-size:1.5em;margin:40px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+h3{color:var(--bright);font-size:1.15em;margin:24px 0 12px}
+h4{color:var(--bright);font-size:1em;margin:16px 0 8px}
+p{margin-bottom:12px}
+table{width:100%;border-collapse:collapse;margin:12px 0 20px;font-size:.9em}
+th{background:var(--bg2);color:var(--bright);padding:10px 12px;text-align:left;border:1px solid var(--border);font-weight:600}
+td{padding:8px 12px;border:1px solid var(--border);vertical-align:top}
+tr:nth-child(even) td{background:var(--bg2)}
+tr:hover td{background:var(--bg3)}
+code{font-family:'JetBrains Mono','Fira Code',Consolas,monospace;background:var(--bg2);padding:2px 6px;border-radius:4px;font-size:.88em;color:var(--accent)}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-x:auto;margin:12px 0 20px;font-size:.88em;line-height:1.5}
+pre code{background:none;padding:0;color:var(--text)}
+.bdg{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.82em;font-weight:600;white-space:nowrap}
+.bdg-ok{background:var(--green);color:#fff}
+.bdg-wip{background:var(--yellow);color:#fff}
+.bdg-todo{background:var(--blue);color:#fff}
+.toc{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin:24px 0}
+.toc h3{margin-top:0;color:var(--accent)}
+.toc ol{padding-left:20px}.toc li{margin:4px 0}.toc ol ol{margin-top:4px}
+blockquote{border-left:3px solid var(--accent);padding:12px 16px;background:var(--bg2);border-radius:0 8px 8px 0;margin:12px 0;color:var(--muted);font-style:italic}
+hr{border:none;border-top:1px solid var(--border);margin:32px 0}
+.note{background:var(--bg2);border-left:3px solid var(--yellow);padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0}
+.note strong{color:var(--yellow)}
+footer{text-align:center;padding:32px;margin-top:40px;border-top:1px solid var(--border);color:var(--muted);font-size:.85em}
+@media print{body{background:#fff;color:#1a1a1a;font-size:11pt}.ctn{max-width:none;padding:0}h2{color:#0066cc;border-bottom-color:#ccc;page-break-after:avoid}h3{page-break-after:avoid}table{page-break-inside:avoid}pre{background:#f5f5f5;border-color:#ccc}.toc{page-break-after:always}.bdg-ok{background:#d4edda;color:#155724}.bdg-wip{background:#fff3cd;color:#856404}.bdg-todo{background:#cce5ff;color:#004085}a{color:#0066cc}.note{background:#f8f9fa}}
+@media(max-width:768px){header h1{font-size:1.5em}table{font-size:.8em}th,td{padding:6px 8px}}
+</style>
+</head>
+<body>
+<header>
+<h1>HERMES A1</h1>
+<div class="sub">Sistema Autonomo de Adquisicion y Telemetria</div>
+<div class="meta">STM32F446RET6 &bull; FreeRTOS &bull; ADXL355 &bull; Quectel EC25</div>
+<div class="meta" style="margin-top:12px"><strong>Documentacion Tecnica v1.2.0</strong></div>
+<div class="meta">Antonio Avendano Sanhueza &bull; LIND Engineering &bull; Junio 2026 &bull; Concepcion, Chile</div>
+</header>
+<div class="ctn">
+<nav class="toc"><h3>Indice</h3><ol>
+<li><a href="#s1">Vision General</a></li>
+<li><a href="#s2">Hardware</a><ol>
+<li><a href="#s2.1">Asignacion de Perifericos</a></li>
+<li><a href="#s2.2">Pinout Completo</a></li>
+<li><a href="#s2.3">Niveles Electricos</a></li>
+<li><a href="#s2.4">Configuracion NVIC</a></li>
+</ol></li>
+<li><a href="#s3">Arquitectura de Software</a><ol>
+<li><a href="#s3.1">Tareas FreeRTOS</a></li>
+<li><a href="#s3.2">Objetivos de Sincronizacion</a></li>
+<li><a href="#s3.3">Event Flags</a></li>
+<li><a href="#s3.4">Flujo de Datos</a></li>
+<li><a href="#s3.5">Tracking de Upload &mdash; Backup Registers</a></li>
+<li><a href="#s3.6">Boot Scan &mdash; Recuperacion post-reset</a></li>
+<li><a href="#s3.7">Root Cause del NRST</a></li>
+</ol></li>
+<li><a href="#s4">Gestion de Memoria</a></li>
+<li><a href="#s5">Estado DMA y FPU</a></li>
+<li><a href="#s6">Correcciones de Codigo</a></li>
+<li><a href="#s7">Analisis Comparativo</a></li>
+<li><a href="#s8">Evaluacion UniKnect SDK</a></li>
+<li><a href="#s9">Actividades Pendientes</a></li>
+<li><a href="#s10">Referencia API</a></li>
+<li><a href="#s11">Compilacion y Flash</a></li>
+<li><a href="#s12">Comandos CLI</a></li>
+<li><a href="#s13">Estructura del Proyecto</a></li>
+<li><a href="#s14">Rutas de Upload</a></li>
+<li><a href="#s15">Conocidos y Limitaciones</a></li>
+</ol></nav><hr>
+<h2 id="s1">1. Vision General</h2>
+<p>Firmware para STM32F446RET6 (Cortex-M4) del sistema HERMES A1. Adquisicion autonomica de vibraciones y telemetria via 4G/LTE. Desarrollado por Antonio Avendano Sanhueza para LIND Engineering, Concepcion, Chile.</p>
+<h3>1.1 Componentes del Sistema</h3>
+<table>
+<tr><th>Componente</th><th>Modelo</th><th>Interfaz</th><th>Funcion</th></tr>
+<tr><td>MCU</td><td>STM32F446RET6</td><td>N/A</td><td>Procesamiento, control, RTOS</td></tr>
+<tr><td>Acelerometro</td><td>ADXL355</td><td>SPI2 (8 MHz)</td><td>Medicion de vibracion 3 ejes, 2/4/8g</td></tr>
+<tr><td>Modem</td><td>Quectel EC25</td><td>USART1 (115200 baud)</td><td>Conectividad 4G/LTE, HTTP POST</td></tr>
+<tr><td>Almacenamiento</td><td>microSD</td><td>SPI1 (8 MHz) + FatFs</td><td>Registro CSV de lecturas</td></tr>
+<tr><td>Debug/CLI</td><td>N/A</td><td>USART2 (115200 baud)</td><td>Interfaz de comandos, diagnostico</td></tr>
+</table>
+
+<h3>1.2 Principio de Operacion</h3>
+<p>El sistema opera en modo <strong>triggered acquisition</strong>: el ADXL355 genera una interrupcion (INT1) cuando la aceleracion supera un umbral configurable. El firmware lee el FIFO del acelerometro, almacena las lecturas en SD como archivos CSV, y las transmite a un servidor remoto via HTTP/4G.</p>
+<p>El pipeline de datos es <strong>asincrono y concurrente</strong>: la adquisicion del sensor, la escritura en SD, la transmision por modem y la interfaz de usuario operan como tareas independientes de FreeRTOS, coordinadas mediante colas, mutex y event flags.</p>
+<p><strong>V1.2.0:</strong> La cola de upload es ahora un buffer circular en RAM (8 slots) que reemplaza la anterior cola basada en SD. El tracking de uploads se realiza con RTC backup registers (BKP0R..BKP19R) que sobreviven resets NRST. La adquisicion del sensor y la transmision por modem operan concurrentemente.</p>
+<h3>1.3 Evolucion: AWTAS &rarr; HERMES A1</h3>
+<table>
+<tr><th>Dimension</th><th>AWTAS (predecesor)</th><th>HERMES A1 (actual)</th></tr>
+<tr><td>Arquitectura</td><td>Baremetal, super-loop en main.c (~58 KB)</td><td>FreeRTOS + CMSIS-RTOS v2, 5 tareas</td></tr>
+<tr><td>Concurrencia</td><td>Secuencial: sensor &rarr; SD &rarr; modem (bloqueante)</td><td>Concurrente: cola RAM + event flags + mutex</td></tr>
+<tr><td>CLI</td><td>Menu de 1 caracter (m, I, r, o, t, i, q)</td><td>Comandos completos (help, status, accel, trigger, sdtest)</td></tr>
+<tr><td>Sincronizacion</td><td>Variables volatile + busy-wait</td><td>osMessageQueue, osEventFlags, osMutex</td></tr>
+<tr><td>Tracking Upload</td><td>QUEUE.TXT en SD</td><td>RAM queue + RTC backup registers</td></tr>
+<tr><td>Reset Safety</td><td>Perdida de estado en reset</td><td>Backup registers sobreviven NRST/IWDG</td></tr>
+</table>
+
+<hr>
+<h2 id="s2">2. Hardware</h2>
+<h3 id="s2.1">2.1 Asignacion de Perifericos</h3>
+<table>
+<tr><th>Periferico</th><th>Pines</th><th>Modo</th><th>Velocidad</th><th>Target</th><th>Nivel Logico</th></tr>
+<tr><td>SPI1</td><td>PA5, PA6, PA7, PB6(CS)</td><td>Full-Duplex Master</td><td>8.0 MB/s</td><td>microSD</td><td>3.3V</td></tr>
+<tr><td>SPI2</td><td>PB13, PB14, PB15, PA4(CS)</td><td>Full-Duplex Master</td><td>8.0 MB/s</td><td>ADXL355</td><td>3.3V</td></tr>
+<tr><td>USART1</td><td>PA9(TX), PA10(RX)</td><td>Asincrono</td><td>115200 baud</td><td>Quectel EC25</td><td>1.8V (modem)</td></tr>
+<tr><td>USART2</td><td>PA2(TX), PA3(RX)</td><td>Asincrono</td><td>115200 baud</td><td>CLI/Debug</td><td>3.3V</td></tr>
+</table>
+
+<h3 id="s2.2">2.2 Pinout Completo</h3>
+<table>
+<tr><th>Pin</th><th>Etiqueta</th><th>Funcion</th><th>Configuracion</th><th>Destino</th></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">SPI1 &mdash; microSD</td></tr></td></tr>
+<tr><td>PA5</td><td>SPI1_SCK</td><td>Clock</td><td>AF5, Push-Pull</td><td>SD CLK</td></tr>
+<tr><td>PA6</td><td>SPI1_MISO</td><td>Data In</td><td>AF5</td><td>SD MISO</td></tr>
+<tr><td>PA7</td><td>SPI1_MOSI</td><td>Data Out</td><td>AF5</td><td>SD MOSI</td></tr>
+<tr><td>PB6</td><td>SD_CS</td><td>Chip Select</td><td>Output PP, High, Speed HIGH</td><td>SD CS</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">SPI2 &mdash; ADXL355</td></tr></td></tr>
+<tr><td>PA4</td><td>ADXL_CS</td><td>Chip Select</td><td>Output PP, High, Speed HIGH</td><td>ADXL355 CS</td></tr>
+<tr><td>PB13</td><td>SPI2_SCK</td><td>Clock</td><td>AF5</td><td>ADXL355 SCLK</td></tr>
+<tr><td>PB14</td><td>SPI2_MISO</td><td>Data In</td><td>AF5</td><td>ADXL355 MISO</td></tr>
+<tr><td>PB15</td><td>SPI2_MOSI</td><td>Data Out</td><td>AF5</td><td>ADXL355 MOSI</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">USART1 &mdash; Quectel EC25</td></tr></td></tr>
+<tr><td>PA9</td><td>USART1_TX</td><td>Transmit</td><td>AF7</td><td>EC25 RX</td></tr>
+<tr><td>PA10</td><td>USART1_RX</td><td>Receive</td><td>AF7</td><td>EC25 TX</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">USART2 &mdash; CLI / Debug</td></tr></td></tr>
+<tr><td>PA2</td><td>USART2_TX</td><td>Transmit</td><td>AF7</td><td>USB-serial RX</td></tr>
+<tr><td>PA3</td><td>USART2_RX</td><td>Receive</td><td>AF7</td><td>USB-serial TX</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">GPIO &mdash; Control Modem</td></tr></td></tr>
+<tr><td>PB0</td><td>HAT_PWR_OFF</td><td>Apagado EC25</td><td>Output PP, Low, Pull Down</td><td>EC25 PWR_OFF</td></tr>
+<tr><td>PB1</td><td>MODEM_PWRKEY</td><td>Encendido EC25</td><td>Output PP, Low, Pull Down</td><td>EC25 PWRKEY</td></tr>
+<tr><td>PB2</td><td>MODEM_RI</td><td>Ring Indicator</td><td>Input EXTI Falling, Pull Up</td><td>EC25 RI</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">GPIO &mdash; ADXL355</td></tr></td></tr>
+<tr><td>PC0</td><td>ADXL_DRDY</td><td>Data Ready</td><td>Input</td><td>ADXL355 DRDY</td></tr>
+<tr><td>PC7</td><td>ADXL_INT1</td><td>Interrupcion</td><td>Input EXTI (prio 5), Pull Down</td><td>ADXL355 INT1</td></tr>
+<tr><td><tr><td colspan="5" style="background:var(--bg3);font-weight:600">Depuracion &mdash; SWD</td></tr></td></tr>
+<tr><td>PA13</td><td>SYS_JTMS-SWDIO</td><td>SWD Data</td><td>Alternate</td><td>ST-Link</td></tr>
+<tr><td>PA14</td><td>SYS_JTCK-SWCLK</td><td>SWD Clock</td><td>Alternate</td><td>ST-Link</td></tr>
+<tr><td>PB3</td><td>SYS_JTDO-SWO</td><td>SWO Trace</td><td>Alternate</td><td>ST-Link</td></tr>
+</table>
+
+<h3 id="s2.3">2.3 Niveles Electricos y Tolerancias</h3>
+<table>
+<tr><th>Senal</th><th>Nivel MCU</th><th>Nivel Target</th><th>Notas</th></tr>
+<tr><td>SPI1 (SD)</td><td>3.3V (VDD)</td><td>3.3V</td><td>Compatible directo</td></tr>
+<tr><td>SPI2 (ADXL355)</td><td>3.3V (VDD)</td><td>3.3V</td><td>Compatible directo</td></tr>
+<tr><td>USART1 (EC25)</td><td>3.3V (VDD)</td><td>1.8V (modem)</td><td>Requiere level shifter o resistencias serie</td></tr>
+<tr><td>USART2 (CLI)</td><td>3.3V (VDD)</td><td>3.3V (USB-serial)</td><td>Compatible directo</td></tr>
+<tr><td>ADXL_INT1</td><td>3.3V (tolerante 5V)</td><td>3.3V</td><td>EXTI falling edge, pull-down</td></tr>
+<tr><td>MODEM_RI</td><td>3.3V (tolerante 5V)</td><td>1.8V-2.8V (EC25)</td><td>EXTI falling edge, pull-up</td></tr>
+</table>
+
+<div class="note"><strong>ATENCION:</strong> USART1 opera a 3.3V en el STM32 pero el EC25 espera 1.8V en sus pines UART. Verificar que el hardware incluye level shifting o resistencias serie de adaptacion.</div>
+<h3 id="s2.4">2.4 Configuracion NVIC</h3>
+<table>
+<tr><th>IRQ</th><th>Fuente</th><th>Preempt Priority</th><th>Sub Priority</th><th>Proposito</th></tr>
+<tr><td>EXTI9_5_IRQn</td><td>PC7 (ADXL_INT1)</td><td>5</td><td>0</td><td>Deteccion de movimiento (motion trigger)</td></tr>
+<tr><td>TIM1_UP_TIM10_IRQn</td><td>TIM1</td><td>15</td><td>0</td><td>Base de tiempo del RTOS (SysTick sustituto)</td></tr>
+<tr><td>PendSV_IRQn</td><td>FreeRTOS</td><td>15</td><td>0</td><td>Context switch del scheduler</td></tr>
+<tr><td>SysTick_IRQn</td><td>SysTick</td><td>15</td><td>0</td><td>Timebase HAL</td></tr>
+</table>
+
+<hr>
+<h2 id="s3">3. Arquitectura de Software</h2>
+<h3 id="s3.1">3.1 Tareas FreeRTOS</h3>
+<table>
+<tr><th>Tarea</th><th>Funcion</th><th>Prioridad CMSIS</th><th>Stack (bytes)</th><th>Entrada</th></tr>
+<tr><td>sensor_task</td><td>StartSensorTask</td><td><span class="bdg bdg-wip">osPriorityHigh</span></td><td>4096</td><td>EVT_MOTION_DETECTED (EXTI)</td></tr>
+<tr><td>modem_task</td><td>StartModemTask</td><td><span class="bdg bdg-wip">osPriorityAboveNormal</span></td><td>8192</td><td>EVT_FILE_READY</td></tr>
+<tr><td>file_task</td><td>StartFileTask</td><td><span class="bdg bdg-todo">osPriorityNormal</span></td><td>6144</td><td>Boot scan + idle loop</td></tr>
+<tr><td>control_task</td><td>StartControlTask</td><td><span class="bdg bdg-todo">osPriorityNormal</span></td><td>4096</td><td>UART2 (CLI)</td></tr>
+<tr><td>defaultTask</td><td>StartDefaultTask</td><td><span class="bdg bdg-todo">osPriorityNormal</span></td><td>512</td><td>Idle loop osDelay(1000)</td></tr>
+</table>
+
+<p><strong>V1.2.0:</strong> Stack sizes actualizados: sensor 4096B (antes 1024B), modem 8192B (antes 2048B), file 6144B (antes 1024B). El modem_task necesita mas stack para HTTP/TCP y parseo de respuestas.</p>
+<h3 id="s3.2">3.2 Objetivos de Sincronizacion</h3>
+<table>
+<tr><th>Objeto</th><th>Tipo</th><th>Configuracion</th><th>Uso</th></tr>
+<tr><td>upload_queue</td><td>RAM circular buffer</td><td>8 slots x 32 bytes</td><td>file_task &rarr; modem_task (TRIG filenames)</td></tr>
+<tr><td>sd_mutex</td><td>osMutex</td><td>Recursive</td><td>Proteccion acceso SD (FatFs)</td></tr>
+<tr><td>sensor_event_flags</td><td>osEventFlags</td><td>5 flags</td><td>Coordinacion entre tareas</td></tr>
+</table>
+
+<p><strong>V1.2.0:</strong> La <code>sensor_queue</code> (50 slots x 28 bytes) fue reemplazada por la <code>upload_queue</code> (8 slots x 32 bytes en RAM). El sensor_task escribe directo a SD en vez de encolar muestras, y la cola maneja solo los nombres de archivos TRIG pendientes de upload.</p>
+<h3 id="s3.3">3.3 Event Flags</h3>
+<table>
+<tr><th>Flag</th><th>Bit</th><th>Productor</th><th>Consumidor</th><th>Semantica</th></tr>
+<tr><td>EVT_MOTION_DETECTED</td><td>(1<<0)</td><td>EXTI ISR / control_task</td><td>sensor_task</td><td>Iniciar adquisicion</td></tr>
+<tr><td>EVT_ACQSTN_DONE</td><td>(1<<1)</td><td>sensor_task</td><td>(reservado)</td><td>Adquisicion completada</td></tr>
+<tr><td>EVT_UPLOAD_DONE</td><td>(1<<2)</td><td>modem_task</td><td>control_task</td><td>Upload completado</td></tr>
+<tr><td>EVT_CFG_CHECK</td><td>(1<<3)</td><td>Timer periodico</td><td>control_task</td><td>Verificar config remota</td></tr>
+<tr><td>EVT_FILE_READY</td><td>(1<<4)</td><td>file_task / modem_task</td><td>modem_task</td><td>Archivo listo para upload</td></tr>
+</table>
+
+<h3 id="s3.4">3.4 Flujo de Datos</h3>
+<p><strong>V1.2.0 &mdash; Pipeline completo:</strong></p>
+<pre><code>1. ADXL_INT1 (EXTI) &rarr; sensor_task (Motion detect)
+2. sensor_task &rarr; acquire data &rarr; write CSV to SD (takes sd_mutex briefly)
+3. sensor_task &rarr; upload_queue_push(filename) &rarr; EVT_FILE_READY
+4. modem_task wakes &rarr; upload_queue_peek &rarr; Modem_UploadFile (3 attempts)
+5. On success: queue_pop &rarr; .DONE marker &rarr; Modem_PowerOff &rarr; check next file
+6. On NRST (from modem TCP close): queue already updated, .DONE already created
+7. On reboot: file_task boot scan &rarr; backup register check &rarr; .DONE check &rarr; requeue</code></pre>
+<h3 id="s3.5">3.5 Tracking de Upload &mdash; Backup Registers RTC</h3>
+<p>El sistema HERMES A1 utiliza un mecanismo de <strong>doble capa</strong> para rastrear cuales archivos TRIG ya fueron subidos con exito:</p>
+<h4>Capa Primaria: RTC Backup Registers (BKP0R..BKP19R)</h4>
+<table>
+<tr><th>Propiedad</th><th>Detalle</th></tr>
+<tr><td>Registros</td><td>BKP0R hasta BKP19R (STM32F446)</td></tr>
+<tr><td>Tamaño</td><td>32 bits por registro</td></tr>
+<tr><td>Capacidad</td><td>19 registros x 32 bits = 608 indices TRIG</td></tr>
+<tr><td>Bitmap</td><td>BKP0R bits 0-31 = TRIG_001..032, BKP1R = TRIG_033..064, etc.</td></tr>
+<tr><td>Supervivencia</td><td>Sobreviven NRST, IWDG reset, software reset</td></tr>
+<tr><td>Limpieza</td><td>Solo se limpian en Power-On Reset (POR)</td></tr>
+<tr><td>Escritura</td><td>Instantanea (un solo registro de 32 bits)</td></tr>
+<tr><td>Funciones</td><td>Modem_MarkUploaded(idx), Modem_IsUploaded(idx)</td></tr>
+</table>
+
+<h4>Capa Fallback: .DONE Marker File en SD</h4>
+<table>
+<tr><th>Propiedad</th><th>Detalle</th></tr>
+<tr><td>Formato</td><td>TRIG_NNN.DONE (archivo vacio en FatFs)</td></tr>
+<tr><td>Creacion</td><td>f_open + f_close con HAL_Delay(50) post-write</td></tr>
+<tr><td>Verificacion</td><td>Boot scan abre archivo para lectura</td></tr>
+<tr><td>Limitacion</td><td>Puede no persistir si NRST golpea durante escritura NAND</td></tr>
+</table>
+
+<p><strong>Flujo en exito:</strong> <code>Modem_CreateDoneMarker()</code> &rarr; <code>Modem_MarkUploaded()</code> PRIMERO (instantaneo) &rarr; archivo .DONE (best-effort con delay de 50ms).</p>
+<h3 id="s3.6">3.6 Boot Scan &mdash; Recuperacion post-reset</h3>
+<p>Al reiniciar (post-NRST), <code>file_task</code> ejecuta un escaneo del directorio SD para reconstruir la cola de upload:</p>
+<pre><code>1. Modem_BackupInit() &mdash; habilita RTC APB1 clock + DBP
+2. f_mount + f_opendir en 0:/
+3. Para cada TRIG_NNN.CSV encontrado:
+   a. PRIMARY CHECK: Modem_IsUploaded(idx) &rarr; saltar si backup register set
+   b. FALLBACK CHECK: .DONE file exists &rarr; saltar
+   c. Si ninguno: agregar a pending_indices[]
+4. Bubble sort pending_indices ascending
+5. upload_queue_push para cada pendiente
+6. Si hay pendientes: osEventFlagsSet(EVT_FILE_READY)</code></pre>
+<p>Este mecanismo garantiza que ningun TRIG se pierda, incluso despues de un NRST reset.</p>
+<h3 id="s3.7">3.7 Root Cause del NRST &mdash; Modem Power Transient</h3>
+<table>
+<tr><th>Propiedad</th><th>Detalle</th></tr>
+<tr><td>Reset reason</td><td>0x00000012 = PINRSTF + IWDGRSTF</td></tr>
+<tr><td>Causa raiz</td><td>Modem EC25 cierra TCP post-upload &rarr; actividad RF &rarr; pico de corriente en rail 3.3V compartido</td></tr>
+<tr><td>Acoplamiento</td><td>Se acopla al pin NRST (~40k ohm pull-up interno)</td></tr>
+<tr><td>Trigger especifico</td><td>AT+QPOWD &rarr; PDP deactivation (+QIURC: pdpdeact) &rarr; spike</td></tr>
+<tr><td>Evidencia</td><td>CONS_OK('Upload successful') NUNCA aparece en log &rarr; reset ocurre en ~5us</td></tr>
+<tr><td>Mitigacion</td><td>Modem_PowerOff() reubicada a modem_task DESPUES de queue pop + .DONE</td></tr>
+<tr><td>Code comment</td><td>quectel_drive.c:431 &mdash; 'Software shutdown only &mdash; NO HAT_PWR_OFF toggle'</td></tr>
+</table>
+
+<hr>
+<h2 id="s4">4. Gestion de Memoria</h2>
+<h3>4.1 Mapa de Memoria del STM32F446RE</h3>
+<table>
+<tr><th>Region</th><th>Direccion</th><th>Tamano</th><th>Uso</th></tr>
+<tr><td>Flash</td><td>0x0800 0000</td><td>512 KB</td><td>Codigo + constantes</td></tr>
+<tr><td>SRAM</td><td>0x2000 0000</td><td>128 KB</td><td>Variables globales + heap + stacks</td></tr>
+<tr><td>CCM RAM</td><td>0x1000 0000</td><td>64 KB</td><td>No utilizado (podria optimizarse)</td></tr>
+</table>
+
+<h3>4.2 Distribucion del Heap FreeRTOS (Heap_4) &mdash; V1.2.0</h3>
+<p><code>configTOTAL_HEAP_SIZE = 40960</code> (40 KB) de los 128 KB de SRAM disponibles.</p>
+<table>
+<tr><th>Componente</th><th>Tamano</th><th>Calculo</th></tr>
+<tr><td>sensor_task stack</td><td>4096 B</td><td>1024 words x 4 bytes</td></tr>
+<tr><td>modem_task stack</td><td>8192 B</td><td>2048 words x 4 bytes</td></tr>
+<tr><td>file_task stack</td><td>6144 B</td><td>1536 words x 4 bytes</td></tr>
+<tr><td>control_task stack</td><td>4096 B</td><td>1024 words x 4 bytes</td></tr>
+<tr><td>default Task stack</td><td>512 B</td><td>128 words x 4 bytes</td></tr>
+<tr><td>upload_queue</td><td>256 B</td><td>8 slots x 32 bytes</td></tr>
+<tr><td>Queue overhead</td><td>~200 B</td><td>Internal FreeRTOS struct</td></tr>
+<tr><td>Mutex + EventFlags</td><td>~200 B</td><td>Internal structs</td></tr>
+<tr><td><strong>Total asignado</strong></td><td><strong>~24,500 B</strong></td><td><strong>~60% del heap de 40 KB</strong></td></tr>
+<tr><td><strong>Heap libre</strong></td><td><strong>~15,500 B</strong></td><td><strong>Disponible para malloc dinamico</strong></td></tr>
+</table>
+
+<h3>4.3 Justificacion de Heap_4</h3>
+<p>FreeRTOS ofrece 5 esquemas de heap. Se selecciono Heap_4 por: coalescencia (fusiona bloques libres adyacentes), alloc + free (soporta liberacion segura), first-fit (algoritmo determinista).</p>
+<p>Riesgo residual: en operacion continua (24/7), la fragmentacion puede acumularse. Mitigacion: usar <code>xPortGetFreeHeapSize()</code> periodicamente para monitorear.</p>
+<hr>
+<h2 id="s5">5. Estado DMA y FPU</h2>
+<h3>5.1 FPU Habilitada <span class="bdg bdg-ok">COMPLETADO</span></h3>
+<table>
+<tr><th>Parametro</th><th>Valor Actual</th><th>Recomendado</th></tr>
+<tr><td>configENABLE_FPU</td><td>1 (habilitada)</td><td>1 (habilitada)</td></tr>
+</table>
+
+<p>Impacto: sensor_task ejecuta operaciones float por hardware (~1-2 ciclos/operacion). A 10 Hz con 3-5 operaciones float por muestra, el overhead es de ~30-50 ciclos/s.</p>
+<h3>5.2 DMA SPI2 <span class="bdg bdg-ok">COMPLETADO</span></h3>
+<table>
+<tr><th>Interfaz</th><th>Metodo Actual</th><th>DMA Configurado</th><th>Impacto</th></tr>
+<tr><td>SPI1 (SD)</td><td>Polling (USE_DMA = 0)</td><td>No</td><td>CPU bloqueada durante transferencias SPI</td></tr>
+<tr><td>SPI2 (ADXL355)</td><td>DMA (HAL_SPI_TransmitReceive_DMA)</td><td>Si (DMA1 Stream 3/4, Ch 0)</td><td>Transferencia continua sin bloquear CPU</td></tr>
+<tr><td>USART1 (EC25)</td><td>Polling</td><td>No</td><td>CPU bloqueada durante comandos AT</td></tr>
+<tr><td>USART2 (CLI)</td><td>Polling (printf)</td><td>No</td><td>Menor impacto (solo debug)</td></tr>
+</table>
+
+<p>DMA1 Stream 3 (RX) + Stream 4 (TX), Channel 0. Sincronizacion via semaforo binario task&rarr;ISR.</p>
+<h3>5.3 Wake-on-Motion (WoM) <span class="bdg bdg-ok">COMPLETADO</span></h3>
+<table>
+<tr><th>Parametro</th><th>Valor</th><th>Estado</th></tr>
+<tr><td>INT1 (PC7)</td><td>EXTI Falling Edge, Pull-Down</td><td><span class="bdg bdg-ok">OK</span></td></tr>
+<tr><td>Activity Detection</td><td>X+Y axes, HPF OFF</td><td><span class="bdg bdg-ok">OK</span></td></tr>
+<tr><td>Threshold</td><td>Configurable via ADXL355_Config_WakeOnMotion()</td><td><span class="bdg bdg-ok">OK</span></td></tr>
+<tr><td>CLI Test</td><td>Comando wom</td><td><span class="bdg bdg-ok">OK</span></td></tr>
+</table>
+
+<hr>
+<h2 id="s6">6. Correcciones de Codigo Aplicadas</h2>
+<table>
+<tr><th>#</th><th>Problema</th><th>Archivo</th><th>Solucion</th><th>Estado</th></tr>
+<tr><td>1</td><td>strcasecmp() no disponible en ARM GCC</td><td>main.c</td><td>Implementacion local strcasecmp_custom()</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>2</td><td>Includes con mayusculas incorrectas</td><td>6 archivos</td><td>Corregido a minusculas consistentes</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>3</td><td>Escrituras a registros EXTI sin deshabilitar IRQ</td><td>control_task.c</td><td>__disable_irq() / __enable_irq() alrededor de EXTI</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>4</td><td>Falso positivo EVT_ACQSTN_DONE en sdtest</td><td>sensor_task.c</td><td>Guard !sdbg_abort_acq antes de osEventFlagsSet</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>5</td><td>Variable muerta FRESULT fres</td><td>main.c</td><td>Eliminada, llamada directa a sd_mount()</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>6</td><td>Credenciales vacias sin validacion</td><td>credentials.h</td><td>Funcion Credentials_Validate() inline</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>7</td><td>FIFO ADXL355 leido con CS low/high por muestra</td><td>adxl355.c</td><td>Burst read: CS bajo una vez, leer todas las muestras</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>8</td><td>Llamadas al modem antes de osKernelStart()</td><td>main.c</td><td>Comentadas; mover a modem_task</td><td><span class="bdg bdg-ok">v1.0</span></td></tr>
+<tr><td>9</td><td>.DONE marker no persiste post-NRST</td><td>quectel_drive.c</td><td>RTC backup registers BKP0R..BKP19R</td><td><span class="bdg bdg-ok">v1.2</span></td></tr>
+<tr><td>10</td><td>NRST por Modem_PowerOff en ruta erronea</td><td>modem_task.c</td><td>PowerOff movido DESPUES de queue pop + .DONE</td><td><span class="bdg bdg-ok">v1.2</span></td></tr>
+<tr><td>11</td><td>upload_queue_pop(NULL,0) UB</td><td>file_task.c</td><td>NULL guard: if (buf != NULL && size > 0)</td><td><span class="bdg bdg-ok">v1.2</span></td></tr>
+<tr><td>12</td><td>Boot scan invisible (CONS_DBG disabled)</td><td>file_task.c</td><td>CONS_DBG &rarr; CONS_INFO for skip reasons</td><td><span class="bdg bdg-ok">v1.2</span></td></tr>
+<tr><td>13</td><td>SD .DONE marker NAND timing</td><td>quectel_drive.c</td><td>HAL_Delay(50) after f_close</td><td><span class="bdg bdg-ok">v1.2</span></td></tr>
+</table>
+
+<hr>
+<h2 id="s7">7. Analisis Comparativo de Versiones</h2>
+<table>
+<tr><th>Proyecto</th><th>Ubicacion</th><th>Arquitectura</th><th>Estado</th></tr>
+<tr><td>cmsis-test (local)</td><td>Directorio actual</td><td>FreeRTOS, 5 tareas, backup registers</td><td><span class="bdg bdg-ok">v1.2.0</span></td></tr>
+<tr><td>cmsis-test (GitHub)</td><td>github.com/tonetooo/cmsis-test</td><td>FreeRTOS, 4 tareas</td><td><span class="bdg bdg-wip">Semi-estable</span></td></tr>
+<tr><td>cmsis (GitHub)</td><td>github.com/tonetooo/cmsis</td><td>FreeRTOS, 4 tareas, sin test suite</td><td><span class="bdg bdg-todo">Version limpia</span></td></tr>
+<tr><td>AWTAS</td><td>github.com/tonetooo/AWTAS</td><td>Baremetal, superloop, state machines</td><td><span class="bdg bdg-todo">Predecesor</span></td></tr>
+</table>
+
+<table>
+<tr><th>Feature</th><th>Local</th><th>cmsis-test (GH)</th><th>cmsis (GH)</th><th>AWTAS</th></tr>
+<tr><td>Archivos .c/.h</td><td>16/19</td><td>14/17</td><td>13/16</td><td>10/10</td></tr>
+<tr><td>Tests unitarios</td><td>47</td><td>No</td><td>No</td><td>No</td></tr>
+<tr><td>RTOS</td><td>FreeRTOS 40KB</td><td>FreeRTOS</td><td>FreeRTOS</td><td>Baremetal</td></tr>
+<tr><td>quectel_drive.c</td><td>~1155 lineas</td><td>~800</td><td>~800</td><td>744 lineas</td></tr>
+<tr><td>Upload queue</td><td>RAM circular</td><td>QUEUE.TXT</td><td>QUEUE.TXT</td><td>SD-based</td></tr>
+<tr><td>Backup registers</td><td>BKP0R..BKP19R</td><td>No</td><td>No</td><td>No</td></tr>
+</table>
+
+<hr>
+<h2 id="s8">8. Evaluacion de Quectel UniKnect SDK</h2>
+<table>
+<tr><th>Componente</th><th>UniKnect SDK</th><th>Nuestro Proyecto</th><th>Veredicto</th></tr>
+<tr><td>MCU</td><td>STM32F413RGT6/VGT6</td><td>STM32F446RET6</td><td>No compatible</td></tr>
+<tr><td>Modem</td><td>EC200U, BG96</td><td>Quectel EC25</td><td>AT similar, no verificado</td></tr>
+<tr><td>Build</td><td>CMake</td><td>CubeMX Makefile</td><td>Requiere migracion</td></tr>
+<tr><td>RTOS</td><td>FreeRTOS bundled</td><td>FreeRTOS + CMSIS-RTOS v2</td><td>Posible conflicto</td></tr>
+</table>
+
+<div class="note"><strong>ATENCION:</strong> No recomendado para la version actual. El costo de portar supera los beneficios.</div>
+<hr>
+<h2 id="s9">9. Actividades Pendientes - Roadmap</h2>
+<h3>9.1 Prioridad 1 - Critico</h3>
+<table>
+<tr><th>#</th><th>Actividad</th><th>Estado</th></tr>
+<tr><td>9.1.1</td><td>DMA para SPI2</td><td><span class="bdg bdg-ok">COMPLETADO</span></td></tr>
+<tr><td>9.1.2</td><td>Habilitar FPU</td><td><span class="bdg bdg-ok">COMPLETADO</span></td></tr>
+<tr><td>9.1.3</td><td>Adquisicion en tiempo continuo</td><td><span class="bdg bdg-wip">EN PROGRESO (85%)</span></td></tr>
+<tr><td>9.1.4</td><td>Calibracion del acelerometro</td><td><span class="bdg bdg-wip">INICIADO (10%)</span></td></tr>
+<tr><td>9.1.5</td><td>Watchdog IWDG</td><td><span class="bdg bdg-ok">COMPLETADO</span></td></tr>
+<tr><td>9.1.6</td><td>Buffer local ante perdida de conectividad</td><td><span class="bdg bdg-ok">COMPLETADO</span></td></tr>
+<tr><td>9.1.7</td><td>Sincronizacion horaria NTP</td><td><span class="bdg bdg-wip">EN PROGRESO (40%)</span></td></tr>
+<tr><td>9.1.8</td><td>Optimizacion de consumo energetico</td><td><span class="bdg bdg-wip">INICIADO (30%)</span></td></tr>
+</table>
+
+<h3>9.2 Prioridad 2 - Alto</h3>
+<table>
+<tr><th>#</th><th>Actividad</th><th>Estado</th></tr>
+<tr><td>9.2.1</td><td>Metricas de calidad de senal</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.2</td><td>Telemetria energetica integrada</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.3</td><td>Gestion remota de configuracion</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.4</td><td>Sistema de alarmas operativas</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.5</td><td>Monitoreo del estado interno</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.6</td><td>Compensacion termica</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.2.7</td><td>Caracterizacion del enlace celular</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+</table>
+
+<h3>9.3 Prioridad 3 - Evolucion</h3>
+<table>
+<tr><th>#</th><th>Actividad</th><th>Estado</th></tr>
+<tr><td>9.3.1</td><td>Arquitectura multisensor I2C</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.3.2</td><td>Reinicio remoto</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+<tr><td>9.3.3</td><td>Migracion del protocolo de transmision</td><td><span class="bdg bdg-todo">PENDIENTE</span></td></tr>
+</table>
+
+<hr>
+<h2 id="s10">10. Referencia API</h2>
+<table>
+<tr><th>Modulo</th><th>Archivos</th><th>Responsabilidad</th></tr>
+<tr><td>Driver ADXL355</td><td>adxl355.c/h</td><td>SPI2, lectura FIFO, conversion raw g, LevelToZero, DMA, WoM</td></tr>
+<tr><td>Driver Quectel EC25</td><td>quectel_drive.c/h</td><td>PowerOn, BringUpNetwork, SendAT, UploadFile, DownloadConfig, BackupInit, MarkUploaded, IsUploaded, CreateDoneMarker, PowerOff, Sleep</td></tr>
+<tr><td>Driver SD</td><td>sd_spi.c/h</td><td>SPI1, bloques 512B, FatFs diskio</td></tr>
+<tr><td>Tareas RTOS</td><td>tasks/*.c</td><td>sensor, modem, file, control pipeline de datos</td></tr>
+<tr><td>Algoritmos</td><td>algo/*.c/h</td><td>Logica pura: motion detection, settling, CLI parser, CSV format</td></tr>
+<tr><td>CLI</td><td>control_task.c</td><td>Parser de comandos, ejecucion, output por UART2</td></tr>
+<tr><td>Tests</td><td>test_suite.c/h</td><td>Diagnostico: SD test, modem test, sensor test</td></tr>
+</table>
+
+<h3>Funciones Clave Nuevas en V1.2.0</h3>
+<table>
+<tr><th>Funcion</th><th>Archivo</th><th>Descripcion</th></tr>
+<tr><td>Modem_BackupInit()</td><td>quectel_drive.c</td><td>Habilita RTC APB1 clock + HAL_PWR_EnableBkUpAccess</td></tr>
+<tr><td>Modem_MarkUploaded(idx)</td><td>quectel_drive.c</td><td>Set bit en BKP0R..BKP19R para TRIG index dado</td></tr>
+<tr><td>Modem_IsUploaded(idx)</td><td>quectel_drive.c</td><td>Lee bit de BKP0R..BKP19R para TRIG index dado</td></tr>
+<tr><td>Modem_CreateDoneMarker(fn)</td><td>quectel_drive.c</td><td>MarkUploaded() + .DONE file + HAL_Delay(50)</td></tr>
+<tr><td>Modem_PowerOff()</td><td>modem_task.c</td><td>AT+QPOWD=1 + delay, modem_powered=0</td></tr>
+<tr><td>upload_queue_push(fn)</td><td>file_task.c</td><td>Enqueue TRIG filename a RAM circular buffer</td></tr>
+<tr><td>upload_queue_peek(buf,sz)</td><td>file_task.c</td><td>Read first filename sin remover</td></tr>
+<tr><td>upload_queue_pop(buf,sz)</td><td>file_task.c</td><td>Read + remove first filename, NULL guard</td></tr>
+</table>
+
+<hr>
+<h2 id="s11">11. Compilacion y Flash</h2>
+<h3>Compilar</h3>
+<pre><code>make -j4</code></pre>
+<h3>Flashear</h3>
+<pre><code>openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program build/HERMES-A1-CMSIS.elf verify reset exit"</code></pre>
+<h3>Conexion CLI</h3>
+<pre><code>picocom -b 115200 /dev/tty.usbmodem*
+screen /dev/tty.usbmodem* 115200</code></pre>
+<h3>Tests Unitarios</h3>
+<pre><code>cd test && ceedling test:all  # 47 tests</code></pre>
+<hr>
+<h2 id="s12">12. Comandos CLI</h2>
+<table>
+<tr><th>Comando</th><th>Descripcion</th></tr>
+<tr><td>help</td><td>Lista de comandos disponibles</td></tr>
+<tr><td>status</td><td>Estado del sistema y umbral actual</td></tr>
+<tr><td>accel</td><td>Lectura actual del acelerometro</td></tr>
+<tr><td>trigger</td><td>Umbral de disparo actual en G</td></tr>
+<tr><td>trigger <valor></td><td>Establecer umbral (0-10 G)</td></tr>
+<tr><td>log</td><td>Lista archivos CSV en SD</td></tr>
+<tr><td>test</td><td>Simula evento de movimiento (prueba de pipeline)</td></tr>
+<tr><td>sdtest</td><td>Adquisicion forzada 10s + tabla ASCII en SD</td></tr>
+<tr><td>modem_on</td><td>Enciende modem + prueba sincronizacion AT</td></tr>
+<tr><td>sensstat</td><td>Lee registro STATUS del ADXL355 (ACT/DRDY bits)</td></tr>
+<tr><td>readreg <hex></td><td>Lee cualquier registro ADXL355</td></tr>
+<tr><td>at <cmd></td><td>Envia comando AT crudo al modem</td></tr>
+<tr><td>debug</td><td>Alterna salida diagnostica (on/off)</td></tr>
+<tr><td>fpu</td><td>Test operaciones FPU (hardware float)</td></tr>
+<tr><td>dma</td><td>Test transferencia SPI2 DMA</td></tr>
+<tr><td>wom</td><td>Test interrupcion Wake-on-Motion</td></tr>
+</table>
+
+<hr>
+<h2 id="s13">13. Estructura del Proyecto</h2>
+<table>
+<tr><th>Ruta</th><th>Contenido</th></tr>
+<tr><td>Core/Inc/</td><td>Headers: main.h, adxl355.h, quectel_drive.h, sd_spi.h, tasks.h, credentials.h, wdt.h, console.h</td></tr>
+<tr><td>Core/Inc/algo/</td><td>Logica pura (test host): sensor_algo.h, cli_algo.h, csv_algo.h</td></tr>
+<tr><td>Core/Src/</td><td>Implementacion: main.c, adxl355.c, quectel_drive.c, sd_spi.c, freertos.c, gpio.c, spi.c, usart.c</td></tr>
+<tr><td>Core/Src/algo/</td><td>Logica pura: sensor_algo.c, cli_algo.c, csv_algo.c</td></tr>
+<tr><td>Core/Src/tasks/</td><td>Tareas RTOS: sensor_task.c, file_task.c, modem_task.c, control_task.c</td></tr>
+<tr><td>Core/Startup/</td><td>Startup assembly + linker script</td></tr>
+<tr><td>Drivers/</td><td>STM32 HAL + CMSIS</td></tr>
+<tr><td>FATFS/</td><td>FatFs middleware</td></tr>
+<tr><td>Middlewares/</td><td>FreeRTOS + FatFs</td></tr>
+<tr><td>test/</td><td>Ceedling + Unity: 47 tests</td></tr>
+<tr><td>docs/</td><td>Documentacion: HTML, PDF, planning, GANTT</td></tr>
+<tr><td>docs/planning/creador gantt/</td><td>GANTT, planificacion, documentacion HTML</td></tr>
+<tr><td>Doxyfile</td><td>Configuracion Doxygen</td></tr>
+<tr><td>Makefile</td><td>Build system (arm-none-eabi-gcc)</td></tr>
+<tr><td>HERMES-A1-CMSIS.ioc</td><td>STM32CubeMX project config</td></tr>
+<tr><td>STM32F446RETX_FLASH.ld</td><td>Linker script</td></tr>
+</table>
+
+<hr>
+<h2 id="s14">14. Rutas de Upload</h2>
+<p>HERMES A1 soporta dos rutas de upload para subir archivos CSV al servidor remoto:</p>
+<table>
+<tr><th>Ruta</th><th>Destino</th><th>Protocolo</th><th>Implementacion</th></tr>
+<tr><td>Ruta 1</td><td>Google Drive API</td><td>HTTP multipart/form-data</td><td>quectel_drive.c (lineas 630-711)</td></tr>
+<tr><td>Ruta 2</td><td>Backend Flask (LIND)</td><td>HTTP POST con headers manuales</td><td>quectel_drive.c (lineas 714-1010)</td></tr>
+</table>
+
+<h3>Ruta 2 &mdash; Backend Flask (Principal)</h3>
+<p>El upload se realiza via HTTP POST a un servidor Flask accesible a traves de un Cloudflare Tunnel. El backend recibe el CSV, lo convierte a formato interno, y lo sube a Google Drive.</p>
+<pre><code>POST /upload HTTP/1.1
+Content-Type: application/octet-stream
+X-Upload-Id: LIND2026ANTONIO
+Content-Length: NNNN
+
+[CSV data]
+
+&rarr; 201 Created (exitoso)
+&rarr; 400 Bad Request (error de formato)</code></pre>
+<h3>Ruta 1 &mdash; Google Drive (Fallback)</h3>
+<p>Upload directo a Google Drive via multipart/form-data con token GDRIVE_TOKEN renovado.</p>
+<hr>
+<h2 id="s15">15. Conocidos y Limitaciones</h2>
+<table>
+<tr><th>#</th><th>Issue</th><th>Impacto</th><th>Mitigacion</th></tr>
+<tr><td>1</td><td>NRST post-upload</td><td>Reset despues de cada upload exitoso</td><td>Modem_PowerOff after queue pop + backup registers</td></tr>
+<tr><td>2</td><td>SD mount falla primer intento</td><td>FRESULT=1 en primer mount</td><td>Reintento automatico en file_task</td></tr>
+<tr><td>3</td><td>NTP sync falla</td><td>Ambos servidores no responden</td><td>No critico &mdash; timestamps usa HAL_GetTick()</td></tr>
+<tr><td>4</td><td>.DONE marker FR=6</td><td>FatFs FR_INVALID_NAME</td><td>Backup registers compensan</td></tr>
+<tr><td>5</td><td>sensor_queue eliminada</td><td>Cambo de arq. v1.1.0 &rarr; v1.2.0</td><td>upload_queue RAM circular reemplaza sensor_queue</td></tr>
+<tr><td>6</td><td>CCM RAM no utilizada</td><td>64 KB disponibles</td><td>Podria optimizarse para buffer o DMA</td></tr>
+</table>
+
+<hr>
+<footer>
+<p><strong>HERMES A1 &mdash; Documentacion Tecnica v1.2.0</strong></p>
+<p>Antonio Avendano Sanhueza &bull; LIND Engineering &bull; Junio 2026</p>
+<p>Generado automaticamente desde documentacion.md + codigo fuente</p>
+</footer>
+</div>
+</body>
+</html>
