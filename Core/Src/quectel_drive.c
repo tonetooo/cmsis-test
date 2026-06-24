@@ -103,22 +103,34 @@ static HAL_StatusTypeDef Modem_BringUpNetwork(void) {
                  while(*p && !isdigit((unsigned char)*p) && *p != '-') p++;
                  
                  if (sscanf(p, "%d,%d", &rssi, &ber) >= 1) {
-                    CONS_INFO("[MODEM] Signal Quality: RSSI=%d (0-31), BER=%d\r\n", rssi, ber);
+                     int dbm = (rssi >= 0 && rssi <= 31) ? rssi * 2 - 110 : -999;
+                     int bars = (rssi >= 20) ? 5 : (rssi >= 15) ? 4 : (rssi >= 10) ? 3 : (rssi >= 5) ? 2 : (rssi > 0) ? 1 : 0;
+                     const char *qlabel = (bars >= 4) ? "EXCELENTE" : (bars == 3) ? "BUENA" : (bars == 2) ? "MEDIA" : (bars == 1) ? "BAJA" : "SIN SIGNAL";
+                     const char *ber_txt = (ber == 0) ? "<0.2%" : (ber == 1) ? "0.2-0.4%" : (ber == 2) ? "0.4-0.8%" : (ber <= 4) ? "0.8-3.2%" : (ber <= 7) ? ">3.2%" : "DESCONOCIDO";
+                     CONS_INFO("[MODEM] Señal: %s (%ddBm, %d/5 barras) | BER: %s\r\n", qlabel, dbm, bars, ber_txt);
                  } else {
-                    char* alt = modem_rx_buffer;
-                    while(*alt && !isdigit((unsigned char)*alt)) alt++;
-                    if (sscanf(alt, "%d,%d", &rssi, &ber) >= 1) {
-                        CONS_INFO("[MODEM] Signal Quality (alt): RSSI=%d, BER=%d\r\n", rssi, ber);
-                    } else {
-                        CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
-                    }
+                     char* alt = modem_rx_buffer;
+                     while(*alt && !isdigit((unsigned char)*alt)) alt++;
+                     if (sscanf(alt, "%d,%d", &rssi, &ber) >= 1) {
+                         int dbm = (rssi >= 0 && rssi <= 31) ? rssi * 2 - 110 : -999;
+                         int bars = (rssi >= 20) ? 5 : (rssi >= 15) ? 4 : (rssi >= 10) ? 3 : (rssi >= 5) ? 2 : (rssi > 0) ? 1 : 0;
+                         const char *qlabel = (bars >= 4) ? "EXCELENTE" : (bars == 3) ? "BUENA" : (bars == 2) ? "MEDIA" : (bars == 1) ? "BAJA" : "SIN SIGNAL";
+                         const char *ber_txt = (ber == 0) ? "<0.2%" : (ber == 1) ? "0.2-0.4%" : (ber == 2) ? "0.4-0.8%" : (ber <= 4) ? "0.8-3.2%" : (ber <= 7) ? ">3.2%" : "DESCONOCIDO";
+                         CONS_INFO("[MODEM] Señal: %s (%ddBm, %d/5 barras) | BER: %s\r\n", qlabel, dbm, bars, ber_txt);
+                     } else {
+                         CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
+                     }
                  }
              } else {
                  char* alt = modem_rx_buffer;
                  while(*alt && !isdigit((unsigned char)*alt)) alt++;
                  int rssi = 99, ber = 99;
                  if (sscanf(alt, "%d,%d", &rssi, &ber) >= 1) {
-                     CONS_INFO("[MODEM] Signal Quality (fallback): RSSI=%d, BER=%d\r\n", rssi, ber);
+                     int dbm = (rssi >= 0 && rssi <= 31) ? rssi * 2 - 110 : -999;
+                     int bars = (rssi >= 20) ? 5 : (rssi >= 15) ? 4 : (rssi >= 10) ? 3 : (rssi >= 5) ? 2 : (rssi > 0) ? 1 : 0;
+                     const char *qlabel = (bars >= 4) ? "EXCELENTE" : (bars == 3) ? "BUENA" : (bars == 2) ? "MEDIA" : (bars == 1) ? "BAJA" : "SIN SIGNAL";
+                     const char *ber_txt = (ber == 0) ? "<0.2%" : (ber == 1) ? "0.2-0.4%" : (ber == 2) ? "0.4-0.8%" : (ber <= 4) ? "0.8-3.2%" : (ber <= 7) ? ">3.2%" : "DESCONOCIDO";
+                     CONS_INFO("[MODEM] Señal: %s (%ddBm, %d/5 barras) | BER: %s\r\n", qlabel, dbm, bars, ber_txt);
                  } else {
                      CONS_WARN("[MODEM] Signal Quality Parse Error. RAW: %s\r\n", modem_rx_buffer);
                  }
@@ -581,8 +593,17 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         osMutexAcquire(sd_mutexHandle, osWaitForever);
         FRESULT fr = f_open(&f, fullpath, FA_READ);
         if (fr != FR_OK) {
-            sd_init();
+            CONS_WARN("[MODEM] Drive f_open failed (FR=%d), remounting...\r\n", (int)fr);
+            f_mount(NULL, "0:", 0);
+            osDelay(50);
             f_mount(&fs, "0:", 1);
+            fr = f_open(&f, fullpath, FA_READ);
+        }
+        if (fr != FR_OK) {
+            CONS_WARN("[MODEM] Remount failed (FR=%d), remounting with correct path...\r\n", (int)fr);
+            f_mount(NULL, "0:", 0);
+            osDelay(50);
+            f_mount(&fs, "0:/", 1);  /* use same path as boot: "0:/" */
             fr = f_open(&f, fullpath, FA_READ);
         }
         if (fr != FR_OK) { osMutexRelease(sd_mutexHandle); Modem_PowerOff(); return HAL_ERROR; }
@@ -684,16 +705,56 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         FIL f;
         int use_sd = 0;
         uint32_t datasize = 0;
-        uint32_t sample_count = 0;
-
-        /* Try SD card first */
+        /* Try SD card first — NO sd_init() (destroys FatFs state!) */
         osMutexAcquire(sd_mutexHandle, osWaitForever);
         CONS_DBG("[MODEM] f_open CSV from SD: %s\r\n", fullpath);
         FRESULT fr = f_open(&f, fullpath, FA_READ);
         if (fr != FR_OK) {
-            CONS_DBG("[MODEM] SD f_open failed (FRESULT=%d), re-init...\r\n", (int)fr);
-            sd_init();
-            f_mount(&fs, "0:", 1);
+            /* Step 1: simple remount (no HW reinit) */
+            CONS_WARN("[MODEM] SD f_open failed (FR=%d), remounting FatFs...\r\n", (int)fr);
+            f_mount(NULL, "0:", 0);   /* unmount */
+            osDelay(50);
+            f_mount(&fs, "0:/", 1);    /* force remount - use same path as boot */
+
+            /* DIAG: Check filesystem info after remount */
+            {
+                FATFS* diag_fs;
+                DWORD diag_free;
+                FRESULT diag_fr = f_getfree("0:/", &diag_free, &diag_fs);
+                if (diag_fr == FR_OK) {
+                    DWORD tot = (diag_fs->n_fatent - 2) * diag_fs->csize;
+                    DWORD fre = diag_free * diag_fs->csize;
+                    CONS_WARN("[MODEM] FS after remount: ~%lu MB total, ~%lu MB free",
+                              (unsigned long)(tot / 2048), (unsigned long)(fre / 2048));
+                } else {
+                    CONS_ERR("[MODEM] f_getfree after remount FAILED (FR=%d)", diag_fr);
+                }
+            }
+
+            fr = f_open(&f, fullpath, FA_READ);
+        }
+        if (fr != FR_OK) {
+            /* Step 2: remount with correct path (no HW reinit, no driver re-link) */
+            CONS_WARN("[MODEM] Remount failed (FR=%d), remounting with correct path...\r\n", (int)fr);
+            f_mount(NULL, "0:", 0);
+            osDelay(50);
+            f_mount(&fs, "0:/", 1);  /* use same path as boot: "0:/" */
+
+            /* DIAG: Check filesystem info after second remount */
+            {
+                FATFS* diag_fs;
+                DWORD diag_free;
+                FRESULT diag_fr = f_getfree("0:/", &diag_free, &diag_fs);
+                if (diag_fr == FR_OK) {
+                    DWORD tot = (diag_fs->n_fatent - 2) * diag_fs->csize;
+                    DWORD fre = diag_free * diag_fs->csize;
+                    CONS_WARN("[MODEM] FS after second remount: ~%lu MB total, ~%lu MB free",
+                              (unsigned long)(tot / 2048), (unsigned long)(fre / 2048));
+                } else {
+                    CONS_ERR("[MODEM] f_getfree after second remount FAILED (FR=%d)", diag_fr);
+                }
+            }
+
             fr = f_open(&f, fullpath, FA_READ);
         }
         if (fr == FR_OK) {
@@ -703,32 +764,28 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
             CONS_OK("[MODEM] CSV found on SD (%lu bytes)\r\n", (unsigned long)datasize);
             osMutexRelease(sd_mutexHandle);
         } else {
-            osMutexRelease(sd_mutexHandle);
-            CONS_WARN("[MODEM] CSV not on SD, trying RAM binary buffer...\r\n");
-            if (upload_buf != NULL && upload_buf_size >= sizeof(BinarySample_t)) {
-                sample_count = upload_buf_size / sizeof(BinarySample_t);
-                BinarySample_t *bs = (BinarySample_t *)upload_buf;
-                uint32_t csv_est = strlen("timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n");
-                char tmp[120];
-                for (uint32_t i = 0; i < sample_count; i++) {
-                    uint32_t ms = bs[i].timestamp_ms;
-                    uint32_t rel_sec = ms / 1000;
-                    uint32_t rel_msec = ms % 1000;
-                    uint32_t abs_sec = 1767817653 + rel_sec;
-                    csv_est += (uint32_t)snprintf(tmp, sizeof(tmp),
-                        "%lu.%03lu;%lu.%03lu;%lu.%03lu;%.6f;%.6f;%.6f;%.2f;%.2f;%.2f\r\n",
-                        rel_sec, rel_msec, abs_sec, rel_msec, abs_sec, rel_msec,
-                        (double)bs[i].x_g, (double)bs[i].y_g, (double)bs[i].z_g,
-                        (double)bs[i].voltage, (double)bs[i].current, (double)bs[i].power);
+            /* === DIAG: List root directory to see what files exist after remount === */
+            {
+                DIR diag_dir;
+                FILINFO diag_fno;
+                FRESULT dir_fr = f_opendir(&diag_dir, "0:/");
+                if (dir_fr == FR_OK) {
+                    CONS_WARN("[MODEM] DIR listing after remount (FR=%d):", fr);
+                    int file_count = 0;
+                    while (f_readdir(&diag_dir, &diag_fno) == FR_OK && diag_fno.fname[0]) {
+                        CONS_WARN("[MODEM]   %-20s %10lu bytes", diag_fno.fname, (unsigned long)diag_fno.fsize);
+                        file_count++;
+                    }
+                    CONS_WARN("[MODEM]   -- %d files total --", file_count);
+                    f_closedir(&diag_dir);
+                } else {
+                    CONS_ERR("[MODEM] DIR listing failed after remount (FR=%d)", dir_fr);
                 }
-                datasize = csv_est;
-                CONS_OK("[MODEM] Converting %lu binary samples to CSV (%lu bytes)\r\n",
-                        (unsigned long)sample_count, (unsigned long)datasize);
-            } else {
-                CONS_ERR("[MODEM] No CSV on SD and no RAM buffer available — upload failed\r\n");
-                Modem_PowerOff();
-                return HAL_ERROR;
             }
+            osMutexRelease(sd_mutexHandle);
+            CONS_ERR("[MODEM] CSV '%s' not found on SD — upload failed\r\n", fullpath);
+            Modem_PowerOff();
+            return HAL_ERROR;
         }
 
         // CSV content type
@@ -796,34 +853,6 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
             }
             f_close(&f);
             osMutexRelease(sd_mutexHandle);
-        } else {
-            /* RAM path: convert binary buffer to CSV text and send */
-            const char *csv_hdr = "timestamp_rel_s;timestamp_abs;unix_time;x_g;y_g;z_g;voltaje;corriente;potencia\r\n";
-            HAL_UART_Transmit(_modem_uart, (uint8_t*)csv_hdr, strlen(csv_hdr), 2000);
-            BinarySample_t *bs = (BinarySample_t *)upload_buf;
-            char tmp[120];
-            for (uint32_t i = 0; i < sample_count; i++) {
-                WDT_Refresh();
-                uint32_t ms = bs[i].timestamp_ms;
-                uint32_t rel_sec = ms / 1000;
-                uint32_t rel_msec = ms % 1000;
-                uint32_t abs_sec = 1767817653 + rel_sec;
-                int n = snprintf(tmp, sizeof(tmp),
-                    "%lu.%03lu;%lu.%03lu;%lu.%03lu;%.6f;%.6f;%.6f;%.2f;%.2f;%.2f\r\n",
-                    rel_sec, rel_msec, abs_sec, rel_msec, abs_sec, rel_msec,
-                    (double)bs[i].x_g, (double)bs[i].y_g, (double)bs[i].z_g,
-                    (double)bs[i].voltage, (double)bs[i].current, (double)bs[i].power);
-                HAL_UART_Transmit(_modem_uart, (uint8_t*)tmp, (UINT)n, 5000);
-            }
-            CONS_OK("[MODEM] CSV sent from RAM (%lu samples)\r\n", (unsigned long)sample_count);
-        }
-
-        /* Free upload buffer if we used it (RAM path) or it's stale (SD path) */
-        if (upload_buf != NULL) {
-            vPortFree(upload_buf);
-            upload_buf = NULL;
-            upload_buf_size = 0;
-            CONS_DBG("[MODEM] Upload buffer freed from heap.\r\n");
         }
 
         HAL_Delay(1000);
