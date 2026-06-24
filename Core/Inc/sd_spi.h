@@ -38,6 +38,8 @@ uint8_t sd_write_block(const uint8_t *buf, uint32_t sector);
 uint8_t sd_read_blocks(uint8_t *buf, uint32_t sector, uint32_t count);
 uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count);
 uint32_t sd_get_sector_count(void);
+uint8_t sd_wait_ready(void);        // Short wait for command readiness
+uint8_t sd_wait_write_complete(void); // Long wait for write cache flush
 
 // High-level file operations
 int sd_mount(void);

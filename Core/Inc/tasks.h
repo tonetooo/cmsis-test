@@ -22,9 +22,11 @@ extern osThreadId_t sensor_taskHandle;
 extern osThreadId_t modem_taskHandle;
 extern osThreadId_t file_taskHandle;
 extern osThreadId_t control_taskHandle;
-extern osMessageQueueId_t sensor_queueHandle;
 extern osMutexId_t sd_mutexHandle;
 extern osEventFlagsId_t sensor_event_flagsHandle;
+
+/* Set by sensor_task after acquisition completes — read by control_task / CLI */
+extern char latest_filename[32];
 
 /* Task entry functions */
 void StartSensorTask(void *argument);
@@ -32,54 +34,36 @@ void StartModemTask(void *argument);
 void StartFileTask(void *argument);
 void StartControlTask(void *argument);
 
-/* Shared filename for upload pipeline */
-extern char latest_filename[32];
+/* RAM-based upload queue — replaces queue.txt to avoid FatFs write/read
+ * race conditions. Producer: file_task. Consumer: modem_task. */
+#define UPLOAD_QUEUE_SIZE 8
 
-/* RAM upload buffer — file_task reads CSV into this after closing.
- * modem_task uploads from here instead of re-reading SD (avoids brown-out data loss). */
-extern uint8_t *upload_buf;
-extern uint32_t upload_buf_size;
+typedef struct {
+    char files[UPLOAD_QUEUE_SIZE][32];
+    volatile int head;
+    volatile int tail;
+    volatile int count;
+} UploadQueue_t;
 
-/* Local buffer for failed uploads (allocated on-demand, not at boot — to avoid starving upload_buf) */
-extern uint8_t *local_buf;
-extern uint32_t local_buf_size;
-extern uint32_t local_buf_max_size;
+extern UploadQueue_t upload_queue;
 
-/* Upload retry mechanism */
-extern uint32_t upload_retry_count;
-extern uint32_t max_upload_retries;
+/* Push a filename to the queue. Returns 1 on success, 0 if queue full. */
+int upload_queue_push(const char* filename);
+
+/* Pop (read + remove) the first filename from the queue.
+ * Returns 0 on success, -1 if queue empty. */
+int upload_queue_pop(char* buf, int size);
+
+/* Peek at the first filename without removing it.
+ * Returns 0 on success, -1 if queue empty. */
+int upload_queue_peek(char* buf, int size);
 
 /* Synchronization flag: set by modem_task during Modem_UploadFile,
- * checked by file_task before freeing/reallocating upload_buf.
- * Prevents use-after-free when a new acquisition starts while upload is in progress. */
+ * checked by file_task to skip queue reads during upload (let queue accumulate
+ * instead of opening a new file while SD mutex is held). */
 extern volatile uint8_t upload_busy;
 
 /* Abort flag — set by sdtest to force sensor task out of acquisition */
 extern volatile uint8_t sdbg_abort_acq;
-
-/* Data structure for the queue */
-typedef struct {
-    uint32_t timestamp_ms;
-    float x_g;
-    float y_g;
-    float z_g;
-    float voltage;
-    float current;
-    float power;
-} SensorReading_t;
-
-/* Compact binary format for RAM upload (28 bytes/sample, no SD dependency).
- * Backend converts BIN→CSV. Fits 1170 samples in 32KB. */
-typedef struct __attribute__((packed)) {
-    uint32_t timestamp_ms;
-    float x_g;
-    float y_g;
-    float z_g;
-    float voltage;
-    float current;
-    float power;
-} BinarySample_t;
-
-#define UPLOAD_BUF_CAPACITY  (32 * 1024)  /* 32KB = 1170 samples × 28 bytes */
 
 #endif /* INC_TASKS_H_ */

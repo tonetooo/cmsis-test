@@ -73,7 +73,7 @@ const osThreadAttr_t modem_task_attributes = {
 osThreadId_t file_taskHandle;
 const osThreadAttr_t file_task_attributes = {
   .name = "file_task",
-  .stack_size = 512 * 4,
+  .stack_size = 1536 * 4,  /* increased from 1024: FatFs + scan FIL on stack needs margin */
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for control_task */
@@ -82,11 +82,6 @@ const osThreadAttr_t control_task_attributes = {
   .name = "control_task",
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for sensor_queue */
-osMessageQueueId_t sensor_queueHandle;
-const osMessageQueueAttr_t sensor_queue_attributes = {
-  .name = "sensor_queue"
 };
 /* Definitions for sd_mutex */
 osMutexId_t sd_mutexHandle;
@@ -138,9 +133,6 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
-  /* creation of sensor_queue */
-  sensor_queueHandle = osMessageQueueNew (500, 28, &sensor_queue_attributes);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
