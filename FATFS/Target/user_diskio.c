@@ -175,7 +175,11 @@ DRESULT USER_ioctl (
 
     switch (cmd) {
         case CTRL_SYNC:
-            res = RES_OK;
+            if (sd_wait_write_complete() == 0) {
+                res = RES_OK;
+            } else {
+                res = RES_ERROR;
+            }
             break;
         case GET_SECTOR_COUNT:
             *(DWORD*)buff = sd_get_sector_count();

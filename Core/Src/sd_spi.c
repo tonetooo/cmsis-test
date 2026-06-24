@@ -56,8 +56,8 @@ static uint8_t spi_send(uint8_t data)
     return rx_data;
 }
 
-// Wait for card ready
-static uint8_t sd_wait_ready(void)
+// Wait for card ready (short timeout for command readiness)
+uint8_t sd_wait_ready(void)
 {
     uint8_t res;
     uint16_t retry = 0;
@@ -65,6 +65,18 @@ static uint8_t sd_wait_ready(void)
         res = spi_send(0xFF);
         retry++;
     } while (res != 0xFF && retry < 500);
+    return (res == 0xFF) ? 0 : 1;
+}
+
+// Wait for card write completion (long timeout for write cache flush)
+uint8_t sd_wait_write_complete(void)
+{
+    uint8_t res;
+    uint32_t retry = 0;
+    do {
+        res = spi_send(0xFF);
+        retry++;
+    } while (res != 0xFF && retry < 100000);  // ~140ms at 5.625 MHz
     return (res == 0xFF) ? 0 : 1;
 }
 
@@ -579,6 +591,8 @@ uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count)
 {
     uint8_t res;
     if (count == 0) return 0;
+
+    /* CMD24 silently drops writes on some SD cards → use CMD25 always */
 
     /* Retry loop: up to 3 attempts for CMD25 failures */
     for (int attempt = 0; attempt < 3; attempt++) {
