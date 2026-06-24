@@ -27,5 +27,11 @@ HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t tim
 HAL_StatusTypeDef Modem_CheckConnection(void);
 HAL_StatusTypeDef Modem_UploadFile(const char* filename);
 HAL_StatusTypeDef Modem_DownloadConfig(char* out_buffer, uint16_t out_size);
+void Modem_Sleep(void);
+
+/* Upload tracking via RTC backup registers (survives NRST/IWDG resets) */
+void Modem_BackupInit(void);
+void Modem_MarkUploaded(int trig_idx);
+int  Modem_IsUploaded(int trig_idx);
 
 #endif /* __QUECTEL_DRIVE_H */

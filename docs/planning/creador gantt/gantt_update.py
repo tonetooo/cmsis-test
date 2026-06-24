@@ -14,7 +14,7 @@ from copy import copy
 import os
 
 SRC = "../creador gantt/GANTT 2025.xlsx"
-DST = "../creador gantt/GANTT 2026.xlsx"
+DST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GANTT 2026.xlsx")
 
 # ── Colours ──────────────────────────────────────────────────────────────
 GREEN      = "70AD47"
@@ -77,7 +77,7 @@ while curr <= end:
     y = curr.year + (curr.month // 12)
     m = (curr.month % 12) + 1
     if m == 1:
-        curr = date(y, 1, 1) if y <= end.year else end
+        curr = date(y, 1, 1)
     else:
         curr = date(curr.year, m, 1)
 NUM_MONTHS = len(month_labels)  # 24 months
@@ -91,7 +91,7 @@ NUM_MONTHS = len(month_labels)  # 24 months
 
 class Task:
     __slots__ = ("kind","label","assigned","pct","sm","em","note")
-    def __init__(self, kind, label, assigned="", pct=0, sm=0, em=0, note=""):
+    def __init__(self, kind, label="", assigned="", pct=0, sm=0, em=0, note=""):
         self.kind = kind       # "phase","task","milestone","sep"
         self.label = label
         self.assigned = assigned
@@ -132,16 +132,19 @@ ROWS = [
     # ═══════════════════════════════════════════════════════════════════
     Task("sep"),
     Task("phase", "📋 P1 — SISTEMA DE ADQUISICIÓN (Prioridad Alta · ~6 meses)"),
-    Task("task", "Adquisición en Tiempo Continuo (sin cortes)", "Antonio A.", 0, 17, 22,
-         "Pipeline sin pérdida de muestras"),
+    Task("task", "Adquisición en Tiempo Continuo (sin cortes)", "Antonio A.", 85, 17, 22,
+         "Pipeline con cola RAM + adquisición concurrente con upload"),
     Task("task", "Optimización DMA (completar validación + modo burst)", "Antonio A.", 60, 17, 19),
     Task("task", "Calibración y Caracterización Acelerómetro", "Antonio A.", 0, 17, 20),
     Task("task", "Buffer Local de Datos ante pérdida de conectividad",
-         "Antonio A.", 0, 18, 21, "Retención ≥ 48 h datos crudos"),
-    Task("task", "Sincronización Horaria (NTP sobre LTE)", "Antonio A.", 0, 18, 21),
+         "Antonio A.", 90, 18, 21,
+         "Cola RAM 8 slots + backup registers RTC BKP0R-BKP19R (survive NRST)"),
+    Task("task", "Sincronización Horaria (NTP sobre LTE)", "Antonio A.", 10, 18, 21,
+         "AT+QNTP implementado pero falla con ambos servidores"),
     Task("task", "FPU Enable (configENABLE_FPU=1) + migración matemática",
-         "Antonio A.", 0, 18, 19),
-    Task("task", "Optimización Consumo Energético (modo sleep)", "Antonio A.", 0, 20, 23),
+         "Antonio A.", 100, 18, 19),
+    Task("task", "Optimización Consumo Energético (modo sleep)", "Antonio A.", 30, 20, 23,
+         "Modem_PowerOff/Modem_Sleep implementados"),
 
     # ═══════════════════════════════════════════════════════════════════
     Task("phase", "📋 P1 — SISTEMA ENERGÉTICO (Prioridad Alta · ~2 meses)"),
@@ -159,8 +162,8 @@ ROWS = [
     Task("phase", "📋 P2 — SEÑAL, DIAGNÓSTICO Y TELEMETRÍA (Prioridad Media)"),
     Task("task", "Métricas de Calidad de Señal (RSSI, SNR, RSRP)", "Antonio A.", 0, 20, 23),
     Task("task", "Telemetría Energética (envío datos batería/solar)", "Antonio A.", 0, 20, 24),
-    Task("task", "Gestión Remota de Configuración", "Antonio A.", 0, 20, 24,
-         "Comandos remotos vía LTE"),
+    Task("task", "Gestión Remota de Configuración", "Antonio A.", 15, 20, 24,
+         "Modem_DownloadConfig + Apply_Remote_Config (parcial)"),
     Task("task", "Sistema de Alarmas Operativas", "Antonio A.", 0, 20, 23),
     Task("task", "Monitoreo Estado Interno (temperatura, watchdog, uptime)",
          "Antonio A.", 0, 20, 22),
@@ -192,12 +195,30 @@ ROWS = [
 
     # ═══════════════════════════════════════════════════════════════════
     Task("sep"),
+    Task("phase", "✅ LOGRADO — FASE 4: UPLOAD PIPELINE & ESTABILIDAD (Jun 2026)"),
+    Task("task", "Sistema de Cola RAM Upload (8 slots circulares)",
+         "Antonio A.", 100, 17, 18, "file_task + upload_queue_push/pop/peek"),
+    Task("task", "Tracking Upload por Backup Registers RTC (BKP0R-BKP19R)",
+         "Antonio A.", 100, 17, 18, "Survive NRST/IWDG, 608 índices max"),
+    Task("task", "Modem_PowerOff reubicado a modem_task (NRST fix)",
+         "Antonio A.", 100, 17, 18, "Evita reset post-upload, queue pop antes de poweroff"),
+    Task("task", "Upload concurrente con adquisición (sensor no bloquea)",
+         "Antonio A.", 100, 17, 18, "sensor_task adquiere mientras modem sube"),
+    Task("task", "Boot scan con skip por backup register + .DONE fallback",
+         "Antonio A.", 100, 17, 18, "file_task.c verifica BKP0R + .DONE file"),
+    Task("task", "Fix upload_queue_pop(NULL,0) UB (memory corruption)",
+         "Antonio A.", 100, 17, 18, "NULL guard en strncpy de file_task.c"),
+
+    # ═══════════════════════════════════════════════════════════════════
+    Task("sep"),
     Task("phase", "🏁 HITOS"),
     Task("milestone", "Sprint 01", "✓", 100, 0, 0),
     Task("milestone", "Sprint 02", "✓", 100, 1, 1),
     Task("milestone", "Análisis de Competencia y Costos", "✓", 100, 0, 0),
     Task("milestone", "FreeRTOS Migration Complete", "✓", 100, 16, 16),
     Task("milestone", "Test Suite Finalizada (47 tests)", "✓", 100, 17, 17),
+    Task("milestone", "Upload Pipeline Estable (sin NRST)", "✓", 100, 17, 18,
+         "Jun 2026 — 3 uploads encadenados exitosos"),
     Task("milestone", "P1 — Adquisición Continua", "Target", 0, 23, 23),
     Task("milestone", "P1 — Sistema Energético", "Target", 0, 23, 23),
     Task("milestone", "Validación Terreno", "Target", 0, 26, 26),
@@ -392,8 +413,9 @@ for t in ROWS:
 r += 1
 ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=24)
 ws.cell(row=r, column=2).value = (
-    "Nota: Avance estimado al 17 de Junio 2026. "
-    "Tareas P1 estimadas en ~6 meses, P2 en ~12 meses, P3 en ~18 meses. "
+    "Nota: Avance actualizado al 24 de Junio 2026. "
+    "Fase 4 completada: upload pipeline estable, NRST eliminado, backup registers funcionando. "
+    "3 uploads encadenados exitosos (TRIG_006→007→008). "
     "Colores: Verde = 100%  |  Azul = 50-99%  |  Naranjo = 1-49%  |  Sin relleno = 0%"
 )
 ws.cell(row=r, column=2).font = Font(size=8, italic=True, color=DARK_GRAY)

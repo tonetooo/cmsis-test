@@ -59,14 +59,14 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t sensor_taskHandle;
 const osThreadAttr_t sensor_task_attributes = {
   .name = "sensor_task",
-  .stack_size = 512 * 4,   /* +100% margin for printf(%f) ~800B stack usage */
+  .stack_size = 1024 * 4,  /* Increased from 512: FatFs error recovery + verify needs margin */
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for modem_task */
 osThreadId_t modem_taskHandle;
 const osThreadAttr_t modem_task_attributes = {
   .name = "modem_task",
-  .stack_size = 1024 * 4,  /* +100% margin for UploadFile large locals (url+host+path+header[640]+buf[HTTP_CHUNK_SIZE]) */
+  .stack_size = 2048 * 4,  /* Doubled: Modem_UploadFile+BringUpNetwork+SendAT+printf internal buffers need ~6KB */
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for file_task */

@@ -404,12 +404,12 @@ uint8_t sd_init(void)
     SD_CS_HIGH();
     spi_send(0xFF);
 
-    CONS_INFO("[STORAGE] Step 7/7: Speed up SPI for data transfer (5.625 MHz)...\r\n");
-    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; 
+    CONS_INFO("[STORAGE] Step 7/7: Speed up SPI for data transfer (2.8 MHz)...\r\n");
+    SD_SPI_HANDLE.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
     if (HAL_SPI_Init(&SD_SPI_HANDLE) != HAL_OK) {
-        CONS_ERR("[STORAGE] [FAIL] Final SPI init at 5.625 MHz failed\r\n");
+        CONS_ERR("[STORAGE] [FAIL] Final SPI init at 2.8 MHz failed\r\n");
     } else {
-        CONS_OK("[STORAGE] SPI running at 5.625 MHz\r\n");
+        CONS_OK("[STORAGE] SPI running at 2.8 MHz\r\n");
     }
     CONS_INFO("[STORAGE] === SD INIT DONE: %s ===\r\n", sd_card_type_str(sd_card_type));
     
@@ -642,7 +642,35 @@ uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count)
                  (unsigned long)cnt, (unsigned long)retry_wip,
                  ok ? "" : " WARN");
 
-        if (ok) return 0;
+        if (ok) {
+            /* === POST-WRITE VERIFY: read back written sectors and compare === */
+            uint32_t verify_sector = sector;
+            if (sd_card_type != SD_TYPE_V2HC) verify_sector /= 512;  /* Undo byte-addr to LBA */
+            uint8_t verify_all_ok = 1;
+            for (uint32_t v_i = 0; v_i < count; v_i++) {
+                uint8_t vbuf[512];
+                HAL_Delay(1);  /* Settle before read-back */
+                if (sd_read_block(vbuf, verify_sector + v_i) != 0) {
+                    CONS_ERR("[SD] verify FAILED — read error at sector %lu",
+                             (unsigned long)(verify_sector + v_i));
+                    verify_all_ok = 0;
+                    break;
+                }
+                if (memcmp(vbuf, buf + v_i * 512, 512) != 0) {
+                    CONS_ERR("[SD] verify FAILED — DATA MISMATCH at sector %lu",
+                             (unsigned long)(verify_sector + v_i));
+                    verify_all_ok = 0;
+                    break;
+                }
+            }
+            if (verify_all_ok) {
+                CONS_DBG("[SD] WRITE-MULTI verified (%lu sectors OK)", (unsigned long)count);
+                return 0;  /* Write + verify successful */
+            }
+            CONS_ERR("[SD] WRITE-MULTI verify FAILED — will retry");
+            /* Fall through to retry */
+        }
+
         HAL_Delay(10);
         if (sd_card_type != SD_TYPE_V2HC) sector /= 512;
     }
@@ -657,7 +685,7 @@ uint8_t sd_write_blocks(const uint8_t *buf, uint32_t sector, uint32_t count)
 
 // Quick check: read sector 0 and validate FAT32 BPB signature
 // Returns 1 if sector looks like valid FAT32, 0 otherwise
-static int sd_check_sector0_fat32(void)
+static int __attribute__((unused)) sd_check_sector0_fat32(void)
 {
     uint8_t buf[512];
     if (sd_read_block(buf, 0) != 0) {
@@ -767,67 +795,11 @@ int sd_mount(void)
                res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
                                           "UNKNOWN ERROR");
 
-        // --- Pre-format check: read sector 0 to see if BPB exists ---
-        CONS_INFO("[STORAGE] Phase 3a: Checking sector 0 before format...\r\n");
-        if (sd_check_sector0_fat32()) {
-            CONS_WARN("[STORAGE] [WARN] Sector 0 has valid FAT32 BPB, but f_mount failed.\r\n");
-            CONS_WARN("[STORAGE] [WARN] Skipping format (card may have corrupted FAT).\r\n");
-            // Don't format, return the original error
-        } else {
-            CONS_INFO("[STORAGE] Phase 3b: Direct write/read test on sector 0...\r\n");
-            {
-                uint8_t test_w[512], test_r[512];
-                memset(test_w, 0xA5, sizeof(test_w));
-                test_w[0] = 'H'; test_w[1] = 'E'; test_w[2] = 'R'; test_w[3] = 'M';
-                test_w[4] = 'E'; test_w[5] = 'S'; test_w[510] = 0x55; test_w[511] = 0xAA;
-                CONS_INFO("[STORAGE] [TEST] Writing test pattern to sector 0 (CMD25, count=1)...\r\n");
-                uint8_t wr = sd_write_blocks((const uint8_t*)test_w, 0, 1);
-                CONS_INFO("[STORAGE] [TEST] sd_write_blocks returned %d\r\n", wr);
-                CONS_INFO("[STORAGE] [TEST] Reading sector 0 back...\r\n");
-                uint8_t rr = sd_read_block(test_r, 0);
-                CONS_INFO("[STORAGE] [TEST] sd_read_block returned %d\r\n", rr);
-                int match = (memcmp(test_w, test_r, 512) == 0);
-                int sig   = (test_r[510] == 0x55 && test_r[511] == 0xAA);
-                CONS_INFO("[STORAGE] [TEST] Data match=%d, 0x55AA=%d, test_r[0..5]=%c%c%c%c%c%c\r\n",
-                       match, sig, test_r[0], test_r[1], test_r[2],
-                       test_r[3], test_r[4], test_r[5]);
-            }
-
-            CONS_INFO("[STORAGE] Phase 3c: Attempting auto-format (f_mkfs)...\r\n");
-            CONS_INFO("[STORAGE] [INFO] Work buffer = 4096 bytes (stack-allocated)\r\n");
-
-            f_mount(NULL, sd_path, 0); // Unmount before format
-
-            BYTE work[4096];
-            CONS_INFO("[STORAGE] [INFO] Trying FM_FAT32 | FM_SFD (superfloppy)...\r\n");
-            res = f_mkfs(sd_path, FM_FAT32 | FM_SFD, 0, work, sizeof(work));
-
-            if (res == FR_OK) {
-                CONS_OK("[STORAGE] [OK] Format returned FR_OK\r\n");
-
-                // --- Post-format verification: read back sector 0 ---
-                CONS_INFO("[STORAGE] [INFO] Verifying format: reading sector 0 back...\r\n");
-                if (sd_check_sector0_fat32()) {
-                    CONS_OK("[STORAGE] [OK] Format write verified!\r\n");
-                } else {
-                    CONS_ERR("[STORAGE] [FAIL] Sector 0 verify FAILED after format\r\n");
-                }
-
-                CONS_INFO("[STORAGE] [INFO] Remounting...\r\n");
-                res = f_mount(&fs, sd_path, 1);
-                if (res != FR_OK) {
-                    CONS_ERR("[STORAGE] [FAIL] Remount after format failed: FRESULT=%d\r\n", res);
-                }
-            } else {
-                CONS_ERR("[STORAGE] [FAIL] Format returned FRESULT=%d\r\n", res);
-                CONS_ERR("[STORAGE]        => %s\r\n",
-                       res == FR_NOT_READY     ? "NOT READY" :
-                       res == FR_DISK_ERR      ? "DISK ERROR" :
-                       res == FR_MKFS_ABORTED  ? "MKFS ABORTED (wrong param)" :
-                       res == FR_INVALID_DRIVE ? "INVALID DRIVE" :
-                                                  "UNKNOWN ERROR");
-            }
-        }
+        // Auto-format DISABLED: SD card must be pre-formatted on PC (FAT32).
+        // This avoids risk of corrupting the FS with f_mkfs on marginal hardware
+        // and ensures a known-good filesystem layout.
+        CONS_ERR("[STORAGE] f_mount failed — card may need formatting on PC (FAT32)\r\n");
+        // res is already != FR_OK, will fall through to failure handler
     }
 
     if (res != FR_OK) {

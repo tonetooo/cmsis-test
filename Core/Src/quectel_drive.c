@@ -19,6 +19,78 @@ extern FATFS fs;
 
 static UART_HandleTypeDef *_modem_uart;
 static char modem_rx_buffer[MODEM_BUFFER_SIZE];
+static uint8_t modem_powered = 0;
+
+/* ============================================================
+ * Upload tracking via RTC backup registers (BKP0R..BKP19R)
+ * Survives NRST, IWDG, software resets — no NAND program delay.
+ * Bitmap: 1 bit per TRIG index.
+ *   BKP0R bits  0-31 = TRIG_001..TRIG_032
+ *   BKP1R bits  0-31 = TRIG_033..TRIG_064
+ *   ...up to 19 regs × 32 = 608 TRIG indices
+ * ============================================================ */
+
+static uint8_t g_backup_inited = 0;
+
+void Modem_BackupInit(void) {
+    if (g_backup_inited) return;
+
+    /* Enable RTC APB1 clock — needed to access backup register space */
+    __HAL_RCC_RTC_ENABLE();
+
+    /* Disable backup domain write protection (DBP) */
+    HAL_PWR_EnableBkUpAccess();
+
+    g_backup_inited = 1;
+    CONS_DBG("[BKP] Backup register tracking initialized\r\n");
+}
+
+void Modem_MarkUploaded(int trig_idx) {
+    if (trig_idx < 1) return;
+    if (!g_backup_inited) Modem_BackupInit();
+
+    int reg = (trig_idx - 1) / 32;
+    int bit = (trig_idx - 1) % 32;
+    if (reg >= 20) return; /* only BKP0R..BKP19R exist */
+
+    __IO uint32_t* bkp_reg = (__IO uint32_t*)(RTC_BASE + 0x50U + (uint32_t)reg * 4U);
+    *bkp_reg |= (1UL << bit);
+    CONS_DBG("[BKP] Marked TRIG_%03d uploaded (reg=%d bit=%d)\r\n", trig_idx, reg, bit);
+}
+
+int Modem_IsUploaded(int trig_idx) {
+    if (trig_idx < 1) return 0;
+
+    int reg = (trig_idx - 1) / 32;
+    int bit = (trig_idx - 1) % 32;
+    if (reg >= 20) return 0;
+
+    __IO uint32_t* bkp_reg = (__IO uint32_t*)(RTC_BASE + 0x50U + (uint32_t)reg * 4U);
+    return (*bkp_reg & (1UL << bit)) ? 1 : 0;
+}
+
+/* Mark upload complete: backup register (instant, survives ANY reset) + .DONE file (best effort).
+ * Called from Modem_UploadFile success paths BEFORE return HAL_OK. */
+static void Modem_CreateDoneMarker(const char* filename) {
+    int file_idx = 0;
+    if (sscanf(filename, "TRIG_%d.CSV", &file_idx) == 1) {
+        /* 1. Write to RTC backup register — survives NRST/IWDG, no NAND delay */
+        Modem_MarkUploaded(file_idx);
+
+        /* 2. Best-effort .DONE file on SD (filesystem consistency, human-readable) */
+        char done_name[32];
+        snprintf(done_name, sizeof(done_name), "TRIG_%03d.DONE", file_idx);
+        osMutexAcquire(sd_mutexHandle, osWaitForever);
+        FIL done_f;
+        FRESULT done_fr = f_open(&done_f, done_name, FA_CREATE_NEW | FA_WRITE);
+        if (done_fr == FR_OK) {
+            f_close(&done_f); /* f_sync → disk_ioctl(CTRL_SYNC) → sd_wait_write_complete */
+            /* Extra delay for SD card internal NAND program */
+            HAL_Delay(50);
+        }
+        osMutexRelease(sd_mutexHandle);
+    }
+}
 
 static HAL_StatusTypeDef Modem_BringUpNetwork(void) {
     CONS_INFO("[MODEM] Preparando red de datos...\r\n");
@@ -210,60 +282,65 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
     CONS_INFO("[MODEM-SIM] PowerOn (simulated)\r\n");
     return HAL_OK;
 #else
-    // 1. Asegurar estado inicial APAGADO (PB0 -> HIGH)
-    HAL_GPIO_WritePin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
-    GPIO_PinState pb0_state = HAL_GPIO_ReadPin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin);
-    CONS_DBG("[MODEM][DIAG] PB0 escrito HIGH (apagar), leido: %s\r\n", pb0_state == GPIO_PIN_SET ? "HIGH (OK)" : "LOW (FALLO!)");
-    HAL_Delay(2000); // Aumentado a 2s para asegurar descarga
-    
-    // 2. ENCENDER HAT (PB0 -> LOW)
-    HAL_GPIO_WritePin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin, GPIO_PIN_RESET);
-    HAL_Delay(100);
-    pb0_state = HAL_GPIO_ReadPin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin);
-    CONS_DBG("[MODEM][DIAG] PB0 escrito LOW (encender), leido: %s\r\n", pb0_state == GPIO_PIN_RESET ? "LOW (OK)" : "HIGH (FALLO!)");
-    CONS_INFO("[MODEM] HAT Energizado. Esperando estabilizacion de fuente (5s)...\r\n");
-    HAL_Delay(5000); // Aumentado a 5s
-    
-    // 3. Pulso en PWRKEY (PB1) para encender el EC25
-    CONS_INFO("[MODEM] Generando pulso en PWRKEY (2s)...\r\n");
+    /* Fast path: modem was previously powered, just wake it */
+    if (modem_powered) {
+        WDT_Refresh();
+        if (Modem_SendAT("AT", "OK", 2000) == HAL_OK) {
+            CONS_DBG("[MODEM] Already powered, AT responsive\r\n");
+            return HAL_OK;
+        }
+        CONS_WARN("[MODEM] AT silent, trying CFUN=1 to wake...\r\n");
+        if (Modem_SendAT("AT+CFUN=1", "OK", 10000) == HAL_OK) {
+            return HAL_OK;
+        }
+        CONS_WARN("[MODEM] Fast wake failed, full re-init...\r\n");
+        modem_powered = 0;
+    }
+
+    /* Try AT first — modem may be alive from previous boot (HAT stays on after NRST glitch fix) */
+    WDT_Refresh();
+    if (Modem_SendAT("AT", "OK", 2000) == HAL_OK) {
+        CONS_INFO("[MODEM] Modem already alive (AT OK) — skipping PWRKEY pulse\r\n");
+        modem_powered = 1;
+        return HAL_OK;
+    }
+    /* Modem might be in sleep/minimum functionality — try CFUN=1 */
+    if (Modem_SendAT("AT+CFUN=1", "OK", 10000) == HAL_OK) {
+        CONS_INFO("[MODEM] Modem woke from CFUN=0 — skipping PWRKEY pulse\r\n");
+        modem_powered = 1;
+        return HAL_OK;
+    }
+
+    /* Modem truly off — pulse PWRKEY (no HAT_PWR_OFF toggle — avoid NRST glitch) */
+    CONS_INFO("[MODEM] AT silent, pulsing PWRKEY (2s)...\r\n");
     HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
-    GPIO_PinState pwrkey_state = HAL_GPIO_ReadPin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin);
-    CONS_DBG("[MODEM][DIAG] PWRKEY escrito HIGH, leido: %s\r\n", pwrkey_state == GPIO_PIN_SET ? "HIGH (OK)" : "LOW (FALLO!)");
-    HAL_Delay(2000); 
+    HAL_Delay(2100);
     HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_RESET);
-    
+
     CONS_INFO("[MODEM] Esperando inicio de firmware y RDY (Max 30s)...\r\n");
-    
+
     uint32_t start_firmware = HAL_GetTick();
     uint32_t null_count = 0;
     uint32_t total_bytes = 0;
     char rdy_buf[3] = {0};
     uint8_t rdy_idx = 0;
     uint8_t rdy_printed = 0;
-
-    // Aumentado timeout de espera de RDY a 30s para EC25-ADFL
     uint32_t last_heartbeat = 0;
+
     while(HAL_GetTick() - start_firmware < 30000) {
         WDT_Refresh();
-        // Verificar aborto por evento
         if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) {
-              CONS_WARN("[MODEM] Abortando PowerOn por evento.\r\n");
-              return HAL_BUSY; // Usar HAL_BUSY para indicar interrupcion
+            CONS_WARN("[MODEM] Abortando PowerOn por evento.\r\n");
+            return HAL_BUSY;
         }
-
-        // Heartbeat cada 5s para confirmar que el firmware no esta colgado
         uint32_t elapsed = HAL_GetTick() - start_firmware;
         if (elapsed - last_heartbeat >= 5000) {
             CONS_DBG("[MODEM][DIAG] Heartbeat t=%lu ms, bytes_recibidos=%lu\r\n",
                    (unsigned long)elapsed, (unsigned long)total_bytes);
             last_heartbeat = elapsed;
         }
-
         uint8_t byte;
         __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
-        
         if(HAL_UART_Receive(_modem_uart, &byte, 1, 10) == HAL_OK) {
             total_bytes++;
             if (byte == 0x00) { null_count++; continue; }
@@ -275,124 +352,104 @@ HAL_StatusTypeDef Modem_PowerOn(void) {
                 if (rdy_buf[(rdy_idx-3)%3] == 'R' && rdy_buf[(rdy_idx-2)%3] == 'D' && rdy_buf[(rdy_idx-1)%3] == 'Y') {
                     CONS_OK("[MODEM] RDY recibido\r\n");
                     rdy_printed = 1;
-                    // Si recibimos RDY, podemos intentar sincronizar antes
-                    break; 
+                    break;
                 }
             }
         }
     }
-    CONS_DBG("[MODEM][DIAG] Total bytes recibidos: %lu, Null bytes: %lu\r\n",
+    CONS_DBG("[MODEM][DIAG] Total bytes: %lu, Null: %lu\r\n",
            (unsigned long)total_bytes, (unsigned long)null_count);
+
     if (total_bytes == 0) {
-        CONS_ERR("[MODEM] CERO bytes recibidos. Modem no enciende.\r\n");
-        CONS_DBG("[MODEM][DIAG] -> Modem no enciende (fuente/HAT) o RX desconectado.\r\n");
-        CONS_DBG("[MODEM][DIAG] Intentando FALLBACK: PWRKEY directo (HAT ya alimentado)...\r\n");
-        
-        // Fallback: omitir control de HAT_PWR_OFF, intentar pulso PWRKEY directo
-        // Esto cubre el caso donde el HAT ya tiene power pero PB0 no funciona como se espera
+        CONS_ERR("[MODEM] CERO bytes. Modem no enciende.\r\n");
+        // Fallback: second PWRKEY pulse directly
+        CONS_DBG("[MODEM][DIAG] Fallback: second PWRKEY pulse...\r\n");
         HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_SET);
         HAL_Delay(2000);
         HAL_GPIO_WritePin(MODEM_PWRKEY_GPIO_Port, MODEM_PWRKEY_Pin, GPIO_PIN_RESET);
-        CONS_DBG("[MODEM][DIAG] Pulso PWRKEY directo enviado. Esperando 20s...\r\n");
-        
-        // Reset contadores y reintentar espera
-        total_bytes = 0;
-        null_count = 0;
-        rdy_printed = 0;
-        rdy_idx = 0;
-        memset(rdy_buf, 0, sizeof(rdy_buf));
-        last_heartbeat = 0;
+
+        total_bytes = 0; null_count = 0; rdy_printed = 0; rdy_idx = 0;
+        memset(rdy_buf, 0, sizeof(rdy_buf)); last_heartbeat = 0;
         uint32_t fb_start = HAL_GetTick();
-        
         while(HAL_GetTick() - fb_start < 20000) {
             WDT_Refresh();
-        if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) return HAL_BUSY;
-            
+            if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) return HAL_BUSY;
             uint32_t fb_elapsed = HAL_GetTick() - fb_start;
             if (fb_elapsed - last_heartbeat >= 5000) {
                 CONS_DBG("[MODEM][DIAG] FB Heartbeat t=%lu ms, bytes=%lu\r\n",
                        (unsigned long)fb_elapsed, (unsigned long)total_bytes);
                 last_heartbeat = fb_elapsed;
             }
-            
             uint8_t byte;
-
             __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
             if(HAL_UART_Receive(_modem_uart, &byte, 1, 10) == HAL_OK) {
                 total_bytes++;
                 if (byte == 0x00) { null_count++; continue; }
                 null_count = 0;
-                CONS_DBG("[MODEM][RX] Byte=0x%02X ('%c')\r\n", byte, (byte>=32 && byte<=126) ? byte : '.');
                 if (!rdy_printed) {
-                    rdy_buf[rdy_idx % 3] = (char)byte;
-                    rdy_idx++;
+                    rdy_buf[rdy_idx % 3] = (char)byte; rdy_idx++;
                     if (rdy_buf[(rdy_idx-3)%3] == 'R' && rdy_buf[(rdy_idx-2)%3] == 'D' && rdy_buf[(rdy_idx-1)%3] == 'Y') {
-                        CONS_OK("[MODEM] RDY recibido\r\n");
-                        rdy_printed = 1;
-                        break;
+                        CONS_OK("[MODEM] RDY recibido\r\n"); rdy_printed = 1; break;
                     }
                 }
             }
         }
-        CONS_DBG("[MODEM][DIAG] FB Total bytes: %lu, Null bytes: %lu\r\n",
-               (unsigned long)total_bytes, (unsigned long)null_count);
         if (total_bytes == 0) {
-            CONS_ERR("[MODEM] Modem no enciende (fuente/HAT) o RX desconectado.\r\n");
-            CONS_DBG("[MODEM][DIAG] Verificar: fuente 2A+, TX/RX cruzados, GND comun, LED status EC25.\r\n");
-        } else {
-            CONS_WARN("[MODEM] FB recibio datos! PB0 (HAT_PWR_OFF) es el problema.\r\n");
+            CONS_ERR("[MODEM] Modem no enciende. Verificar: fuente 2A+, TX/RX cruzados.\r\n");
+            return HAL_ERROR;
         }
-    } else if (null_count > total_bytes / 2) {
-        CONS_WARN("[MODEM] Muchos nulls -> posible baudrate incorrecto.\r\n");
-    } else {
-        CONS_WARN("[MODEM] Datos recibidos pero sin RDY claro.\r\n");
     }
-    
-    // 4. Intentar sincronizacion AT
+
+    // Sincronizacion AT
     CONS_INFO("[MODEM] Sincronizando baudrate...\r\n");
     for(int i=0; i<30; i++) {
         WDT_Refresh();
         if (g_modem_abort_enabled && (osEventFlagsGet(sensor_event_flagsHandle) & EVT_MOTION_DETECTED)) return HAL_BUSY;
-
         uint8_t d;
         while(HAL_UART_Receive(_modem_uart, &d, 1, 0) == HAL_OK);
         __HAL_UART_CLEAR_FLAG(_modem_uart, UART_FLAG_ORE | UART_FLAG_NE | UART_FLAG_FE | UART_FLAG_PE);
-
         if (Modem_SendAT("AT", "OK", 1000) == HAL_OK) {
             CONS_OK("[MODEM] Comunicacion establecida\r\n");
             Modem_SendAT("ATE0", "OK", 1000);
+            modem_powered = 1;
             return HAL_OK;
-        } else {
-            if (strlen(modem_rx_buffer) > 0) {
-                CONS_DBG("[MODEM] Intento %d: Recibido: ", i+1);
-                for(int j=0; j<strlen(modem_rx_buffer); j++) {
-                    uint8_t c = (uint8_t)modem_rx_buffer[j];
-                    if(c >= 32 && c <= 126) printf("%c", c);
-                    else if (c != 0) printf("[%02X]", c);
-                }
-                printf("\r\n");
-            } else {
-                CONS_DBG("[MODEM] Intento %d: Sin respuesta.\r\n", i+1);
-            }
         }
         HAL_Delay(500);
     }
-
     CONS_ERR("[MODEM] Error de comunicacion inicial.\r\n");
     return HAL_ERROR;
 #endif
 }
 
 void Modem_PowerOff(void) {
-    CONS_WARN("[MODEM] PowerOff\r\n");
-    // Intentar apagado por software, pero no bloquear si falla
-    if (Modem_SendAT("AT+QPOWD=1", "POWERED DOWN", 5000) != HAL_OK) {
-        CONS_WARN("[MODEM] SW poweroff failed. Forcing HW.\r\n");
+    if (!modem_powered) {
+        CONS_DBG("[MODEM] Already off, skipping PowerOff\r\n");
+        return;
     }
-    HAL_Delay(2000);
-    // Pin 37 en ALTO apaga el HAT
-    HAL_GPIO_WritePin(HAT_PWR_OFF_GPIO_Port, HAT_PWR_OFF_Pin, GPIO_PIN_SET);
-    CONS_OK("[MODEM] HAT de-energized.\r\n");
+    CONS_WARN("[MODEM] PowerOff (software only, no HAT toggle)\r\n");
+    WDT_Refresh();
+    // Software shutdown only — NO HAT_PWR_OFF toggle (avoids NRST glitch)
+    if (Modem_SendAT("AT+QPOWD=1", "POWERED DOWN", 5000) != HAL_OK) {
+        CONS_WARN("[MODEM] SW poweroff failed.\r\n");
+    }
+    WDT_Refresh();
+    HAL_Delay(500);
+    WDT_Refresh();
+    modem_powered = 0;
+    CONS_OK("[MODEM] Modem shut down (HAT powered).\r\n");
+}
+
+void Modem_Sleep(void) {
+    if (!modem_powered) {
+        CONS_DBG("[MODEM] Not powered, skipping Sleep\r\n");
+        return;
+    }
+    CONS_INFO("[MODEM] Entering sleep mode (CFUN=0)...\r\n");
+    WDT_Refresh();
+    Modem_SendAT("AT+CFUN=0", "OK", 5000);
+    WDT_Refresh();
+    CONS_OK("[MODEM] Modem asleep (CFUN=0).\r\n");
+    /* Note: modem_powered stays 1 — modem is still physically on */
 }
 
 HAL_StatusTypeDef Modem_SendAT(char* command, char* expected_reply, uint32_t timeout) {
@@ -646,8 +703,11 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         osMutexRelease(sd_mutexHandle);
 
         if (Modem_SendAT("AT+QHTTPREAD=60", "OK", 6000) != HAL_OK) { Modem_PowerOff(); return HAL_ERROR; }
+        Modem_CreateDoneMarker(filename);
         CONS_OK("[MODEM] Upload complete (Drive).\r\n");
-        Modem_PowerOff();
+        /* NOTA: Modem_PowerOff() se llama en modem_task DESPUÉS de
+         * upload_queue_pop() + creación de .DONE para evitar NRST
+         * antes de que el queue se actualice. */
         return HAL_OK;
     }
 
@@ -882,8 +942,9 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         
         // Si vemos codigo 2xx en la respuesta, es EXITO (200 OK, 201 Created, etc.)
         if (strstr(modem_rx_buffer, "HTTP/1.1 2") != NULL || strstr(modem_rx_buffer, "HTTP/1.0 2") != NULL) {
+             Modem_CreateDoneMarker(filename);
              CONS_OK("[MODEM] HTTP 2xx detected. Upload successful.\r\n");
-             Modem_PowerOff();
+             /* Modem_PowerOff() se llama en modem_task después de queue pop */
              return HAL_OK;
         }
 
@@ -925,8 +986,9 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
         
         // Si el resultado es 0 (Exito modem) y status 200, todo bien.
         if (http_result == 0 && (http_status == 200 || http_status == 0)) {
+             Modem_CreateDoneMarker(filename);
              CONS_OK("[MODEM] Upload complete (backend).\r\n");
-             Modem_PowerOff();
+             /* Modem_PowerOff() se llama en modem_task después de queue pop */
              return HAL_OK;
         }
 
@@ -939,8 +1001,9 @@ HAL_StatusTypeDef Modem_UploadFile(const char* filename) {
             Modem_PowerOff();
             return HAL_ERROR;
         }
-        CONS_OK("[MODEM] Upload complete (backend).\r\n");
-        Modem_PowerOff();
+        Modem_CreateDoneMarker(filename);
+        CONS_OK("[MODEM] Upload complete (backend, fallthrough).\r\n");
+        /* Modem_PowerOff() se llama en modem_task después de queue pop */
         return HAL_OK;
     }
 

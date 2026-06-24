@@ -38,6 +38,7 @@ void StartSensorTask(void *argument) {
     uint32_t last_print = 0;
     char filename[32];
     uint32_t write_count = 0;
+    uint8_t write_error = 0;
     static int next_trig_idx = 1;  /* Persistent across acquisitions */
     UINT bw;
 
@@ -90,14 +91,7 @@ void StartSensorTask(void *argument) {
             continue;
         }
 
-        /* === Don't start if modem is uploading (SD busy) === */
-        if (upload_busy) {
-            CONS_WARN("[SENSOR] Upload in progress, deferring acquisition\r\n");
-            osDelay(1000);
-            continue;
-        }
-
-        CONS_OK("[SENSOR] Motion detected, starting acquisition\r\n");
+        CONS_INFO("[SENSOR] Starting acquisition (upload_busy=%d, sd_mutex serializes)\r\n", (int)upload_busy);
         acquiring = 1;
         acq_start = osKernelGetTickCount();
         settling_start = 0;
@@ -186,6 +180,7 @@ void StartSensorTask(void *argument) {
             if (fr_w != FR_OK) {
                 CONS_ERR("[SENSOR] f_write FAILED at sample #%lu (FR=%d) — aborting acquisition\r\n",
                     (unsigned long)write_count, fr_w);
+                write_error = 1;
                 osMutexRelease(sd_mutexHandle);
                 acquiring = 0;
                 break;
@@ -248,56 +243,27 @@ void StartSensorTask(void *argument) {
         }
         osDelay(50);
 
-        /* === VERIFY: re-open for READ to confirm file persists === */
+        /* === VERIFY: lightweight (skip heavy FatFs ops if we had a write error) === */
         int verified = 0;
-        for (int v_attempt = 0; v_attempt < 3; v_attempt++) {
+        if (!write_error) {
             FIL vf;
             FRESULT vfr = f_open(&vf, filename, FA_READ);
             if (vfr == FR_OK) {
-                CONS_OK("[SENSOR] VERIFY: '%s' reopened OK (%lu bytes)\r\n",
+                CONS_OK("[SENSOR] VERIFY: '%s' OK (%lu bytes)\r\n",
                        filename, (unsigned long)f_size(&vf));
                 f_close(&vf);
                 verified = 1;
-                break;
-            }
-
-            if (v_attempt == 0) {
-                CONS_ERR("[SENSOR] VERIFY: '%s' READ OPEN FAILED (FR=%d) — will remount and retry\r\n",
-                       filename, vfr);
-
-                /* Check f_stat for more info */
-                FILINFO sinfo;
-                FRESULT sfr = f_stat(filename, &sinfo);
-                if (sfr == FR_OK) {
-                    CONS_WARN("[SENSOR] f_stat finds '%s' (%lu bytes) but f_open fails! DIRTY CACHE?\r\n",
-                           filename, (unsigned long)sinfo.fsize);
-                } else {
-                    CONS_WARN("[SENSOR] f_stat also fails for '%s' (FR=%d)\r\n", filename, sfr);
-                }
-
-                /* Remount to refresh FatFs state */
-                CONS_WARN("[SENSOR] Attempting unmount + remount\r\n");
-                f_mount(NULL, "0:", 0);
-                f_mount(&fs, "0:/", 1);
-
-                /* Directory listing */
-                DIR dir;
-                FILINFO dno;
-                CONS_WARN("[SENSOR] Root directory listing:\r\n");
-                if (f_opendir(&dir, "0:/") == FR_OK) {
-                    while (f_readdir(&dir, &dno) == FR_OK && dno.fname[0]) {
-                        CONS_WARN("  %-20s %10lu bytes\r\n", dno.fname, (unsigned long)dno.fsize);
-                    }
-                    f_closedir(&dir);
-                }
             } else {
-                CONS_WARN("[SENSOR] VERIFY retry #%d\r\n", v_attempt + 1);
-                osDelay(100);
+                CONS_ERR("[SENSOR] VERIFY: '%s' reopen failed (FR=%d) — FILE WRITE FAILED!\r\n",
+                       filename, vfr);
             }
+        } else {
+            CONS_ERR("[SENSOR] Write error during acquisition — '%s' may be incomplete or missing\r\n",
+                   filename);
         }
 
         if (!verified) {
-            CONS_ERR("[SENSOR] VERIFY: '%s' NOT FOUND after 3 attempts — FILE WRITE FAILED!\r\n", filename);
+            CONS_ERR("[SENSOR] FILE '%s' NOT AVAILABLE after acquisition\r\n", filename);
         }
 
         osMutexRelease(sd_mutexHandle);
