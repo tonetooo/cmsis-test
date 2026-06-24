@@ -134,31 +134,7 @@ else
             log_info "URL Tunnel guardada en tunnel_url.txt"
         fi
     else
-        log_info "Iniciando tunnel ad-hoc con trycloudflare.com..."
-        log_info "No se requiere cuenta de Cloudflare"
-        nohup cloudflared tunnel --url "http://localhost:$PORT" > logs/tunnel.log 2>&1 &
-        
-        TUNNEL_URL=""
-        for i in $(seq 1 15); do
-            TUNNEL_URL=$(grep -m1 -o "https://[A-Za-z0-9.-]*\.trycloudflare\.com" logs/tunnel.log || true)
-            if [ -n "$TUNNEL_URL" ]; then
-                TS=$(date +"%Y-%m-%d %H:%M:%S %Z")
-                printf "URL: %s\nGENERATED_AT: %s\n" "$TUNNEL_URL" "$TS" > tunnel_url.txt
-                log_info "Túnel Cloudflare activo: $TUNNEL_URL"
-                log_info "URL guardada en tunnel_url.txt"
-                
-                log_info "Actualizando credentials.h con nueva URL..."
-                python3 backend-drive/update_credentials.py "$TUNNEL_URL"
-                
-                break
-            fi
-            sleep 1
-        done
-        
-        if [ -z "$TUNNEL_URL" ]; then
-            log_warn "No se pudo obtener la URL del túnel en 15 segundos"
-            log_warn "Revisa logs/tunnel.log manualmente"
-        fi
+        log_warn "CLOUDFLARE_TUNNEL_NAME no configurado, túnel no iniciado"
     fi
     
     log_info "Backend iniciado en background"

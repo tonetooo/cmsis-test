@@ -63,3 +63,6 @@ Thumbs.db
 *.csv
 upload_cache/
 temp/
+
+# Logs directory
+logs/

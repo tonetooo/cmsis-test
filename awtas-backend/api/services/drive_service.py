@@ -3,7 +3,6 @@ Servicio para interactuar con Google Drive
 """
 import os
 import io
-import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -40,7 +39,7 @@ class DriveService:
             self.initialize()
         return self.service
     
-    def upload_file(self, file_content, filename, folder_id, max_retries=3):
+    def upload_file(self, file_content, filename, folder_id):
         """
         Subir archivo a una carpeta específica en Google Drive
         
@@ -48,41 +47,30 @@ class DriveService:
             file_content: Contenido del archivo en bytes
             filename: Nombre del archivo
             folder_id: ID de la carpeta destino
-            max_retries: Número máximo de reintentos
             
         Returns:
             Dict con información del archivo creado
         """
-        last_exception = None
-        
-        for attempt in range(max_retries):
-            try:
-                service = self.get_service()
-                file_metadata = {
-                    "name": filename,
-                    "parents": [folder_id]
-                }
-                media = MediaIoBaseUpload(
-                    io.BytesIO(file_content),
-                    mimetype="text/csv",
-                    resumable=False
-                )
-                file = service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields="id,name,createdTime",
-                    supportsAllDrives=True
-                ).execute()
-                return file
-            except Exception as e:
-                last_exception = e
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"Upload attempt {attempt + 1} failed: {str(e)}. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    self.service = None
-                else:
-                    raise Exception(f"Error uploading file after {max_retries} attempts: {str(last_exception)}")
+        try:
+            service = self.get_service()
+            file_metadata = {
+                "name": filename,
+                "parents": [folder_id]
+            }
+            media = MediaIoBaseUpload(
+                io.BytesIO(file_content),
+                mimetype="text/csv",
+                resumable=False
+            )
+            file = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id,name,createdTime",
+                supportsAllDrives=True
+            ).execute()
+            return file
+        except Exception as e:
+            raise Exception(f"Error uploading file: {str(e)}")
     
     def get_file_by_name(self, filename, folder_id):
         """

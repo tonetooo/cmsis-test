@@ -2,7 +2,6 @@
 Ruta para subir archivos a Google Drive
 """
 import struct
-import traceback
 from flask import Blueprint, request, jsonify
 from config import get_config
 from api.services import get_drive_service
@@ -91,12 +90,12 @@ def upload():
             # Rename to .CSV for Drive
             filename = filename[:-4] + '.CSV'
         
+        # Subir archivo
         drive_service = get_drive_service()
         file_info = drive_service.upload_file(
             file_content,
             filename,
-            config.DRIVE_FOLDER_ID,
-            max_retries=3
+            config.DRIVE_FOLDER_ID
         )
         
         result = {
@@ -112,15 +111,4 @@ def upload():
         return jsonify(result), 201
     
     except Exception as e:
-        try:
-            content_len = len(request.get_data() or b"")
-        except Exception:
-            content_len = 0
-        print(f"\n*** UPLOAD ERROR ***")
-        print(f"Filename: {request.args.get('filename', 'N/A')}")
-        print(f"Content-Length: {content_len} bytes")
-        print(f"Headers: {dict(request.headers)}")
-        print(f"Args: {dict(request.args)}")
-        traceback.print_exc()
-        print(f"*** END UPLOAD ERROR ***\n")
         return jsonify({"error": "upload_failed", "message": str(e)}), 500
