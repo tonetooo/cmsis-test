@@ -47,6 +47,8 @@ void StartModemTask(void *argument) {
                     FRESULT done_fr = f_open(&done_f, done_name, FA_CREATE_NEW | FA_WRITE);
                     if (done_fr == FR_OK) {
                         f_close(&done_f);
+                        /* Extra delay for SD card internal NAND program */
+                        HAL_Delay(50);
                         CONS_DBG("[MODEM] Created marker: %s\r\n", done_name);
                     } else {
                         CONS_WARN("[MODEM] Marker '%s' create failed (FR=%d)\r\n",

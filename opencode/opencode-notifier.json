@@ -1,0 +1,15 @@
+{
+  "sound": false,
+  "notification": false,
+  "bell": false,
+  "timeout": 5,
+  "showProjectName": true,
+  "events": {
+    "permission": { "sound": false, "notification": false, "bell": false },
+    "complete": { "sound": false, "notification": false, "bell": false },
+    "error": { "sound": false, "notification": false, "bell": false },
+    "question": { "sound": false, "notification": false, "bell": false },
+    "subagent_complete": { "sound": false, "notification": false, "bell": false },
+    "user_cancelled": { "sound": false, "notification": false, "bell": false }
+  }
+}

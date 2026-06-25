@@ -12,7 +12,6 @@
     "opencode-websearch-cited",
     "./plugins/model-router",
     "./plugins/token-goat.ts",
-    "opencode-raven",
     "opencode-dux",
     "@mohak34/opencode-notifier"
   ],
@@ -28,18 +27,12 @@
     "codebase-memory-mcp": {
       "enabled": true,
       "type": "local",
-      "command": [
-        "C:\\Users\\toneto\\.local\\bin\\codebase-memory-mcp.exe"
-      ]
+      "command": ["~/.local/bin/codebase-memory-mcp"]
     },
     "mempalace": {
       "enabled": true,
       "type": "local",
-      "command": [
-        "python",
-        "-m",
-        "mempalace.mcp_server"
-      ]
+      "command": ["python", "-m", "mempalace.mcp_server"]
     }
   }
 }

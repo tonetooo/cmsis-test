@@ -1,92 +1,201 @@
 # AWTAS Backend - Script de inicio para Windows
-# Este script configura y ejecuta el backend
+# Arranca Flask + cloudflared tunnel + actualiza credentials.h del STM32
+# Uso: .\start.ps1
 
-# Cambiar al directorio del script
+param(
+    [switch]$NoTunnel,
+    [switch]$NoUpdateCredentials
+)
+
+$ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "AWTAS Backend - Inicio Windows" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-Write-Host ""
+function Log($msg, $color = "Green") { Write-Host "[AWTAS] $msg" -ForegroundColor $color }
 
-# Verificar Python
-Write-Host "[INFO] Verificando Python..." -ForegroundColor Cyan
+# ── 1. Verificar dependencias ──────────────────────────────────────
+Log "Verificando dependencias..."
 $python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    Write-Host "[ERROR] Python no está instalado o no está en PATH" -ForegroundColor Red
-    Exit 1
-}
-Write-Host "[OK] Python encontrado: $($python.Source)" -ForegroundColor Green
+if (-not $python) { Log "Python no encontrado en PATH" Red; exit 1 }
+Log "Python: $($python.Source)"
 
-# Crear entorno virtual si no existe
+$cloudflared = $null
+if (-not $NoTunnel) {
+    $cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if (-not $cloudflared) { Log "cloudflared no encontrado. Usa -NoTunnel para omitir." Red; exit 1 }
+    Log "cloudflared: $($cloudflared.Source)"
+}
+
+# ── 2. Entorno virtual + dependencias ──────────────────────────────
 if (-not (Test-Path ".venv")) {
-    Write-Host "[INFO] Creando entorno virtual..." -ForegroundColor Cyan
+    Log "Creando entorno virtual..."
     python -m venv .venv
 }
 
-# Activar entorno virtual
-Write-Host "[INFO] Activando entorno virtual..." -ForegroundColor Cyan
+Log "Activando venv..."
 & .\.venv\Scripts\Activate.ps1
 
-# Instalar dependencias
-Write-Host "[INFO] Instalando dependencias..." -ForegroundColor Cyan
-pip install --upgrade pip
-pip install -r requirements.txt
+Log "Instalando dependencias..."
+pip install -q --upgrade pip
+pip install -q -r requirements.txt
 
-Write-Host ""
-Write-Host "[INFO] Verificando archivos de configuración..." -ForegroundColor Cyan
-
-# Verificar credentials.json
+# ── 3. Verificar archivos críticos ─────────────────────────────────
 if (-not (Test-Path "credentials.json")) {
-    Write-Host "[WARN] credentials.json no encontrado" -ForegroundColor Yellow
-    Write-Host "       Descárgalo de Google Cloud Console" -ForegroundColor Yellow
+    Log "credentials.json no encontrado (necesario para Google Drive)" Yellow
 }
-
-# Crear .env si no existe
 if (-not (Test-Path ".env")) {
-    Write-Host "[INFO] Creando .env desde .env.example..." -ForegroundColor Cyan
-    Copy-Item ".env.example" ".env"
-    Write-Host "[WARN] Actualiza .env con tus valores" -ForegroundColor Yellow
-}
-
-# Crear directorio de logs
-if (-not (Test-Path "logs")) {
-    New-Item -ItemType Directory -Force -Path "logs" | Out-Null
-}
-
-# Encontrar puerto disponible
-$port = if ($env:PORT) { $env:PORT } else { "8080" }
-$portAvailable = $false
-
-for ($p = [int]$port; $p -lt [int]$port + 100; $p++) {
-    $netstat = netstat -ano 2>$null | Select-String ":$p "
-    if (-not $netstat) {
-        $port = $p
-        $portAvailable = $true
-        break
+    if (Test-Path ".env.example") {
+        Copy-Item ".env.example" ".env"
+        Log ".env creado desde .env.example — verifica los valores" Yellow
     }
 }
 
-if (-not $portAvailable) {
-    Write-Host "[WARN] No se encontró puerto disponible" -ForegroundColor Yellow
+# Cargar .env
+if (Test-Path ".env") {
+    Get-Content ".env" | ForEach-Object {
+        if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+            [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), "Process")
+        }
+    }
 }
 
-Write-Host ""
-Write-Host "[INFO] Iniciando servidor en puerto: $port" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "================================================" -ForegroundColor Green
-Write-Host "Backend AWTAS ejecutándose" -ForegroundColor Green
-Write-Host "================================================" -ForegroundColor Green
-Write-Host "URL Local:  http://localhost:$port" -ForegroundColor Cyan
-Write-Host "Dashboard:  http://localhost:$port/dashboard" -ForegroundColor Cyan
-Write-Host "Health:     http://localhost:$port/health" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Presiona Ctrl+C para detener" -ForegroundColor Yellow
-Write-Host ""
-
+# ── 4. Puerto ──────────────────────────────────────────────────────
+$port = if ($env:PORT) { [int]$env:PORT } else { 8080 }
+$portInUse = netstat -ano 2>$null | Select-String ":$port\s+.*LISTENING"
+if ($portInUse) {
+    Log "Puerto $port en uso, buscando alternativo..." Yellow
+    for ($p = $port + 1; $p -lt $port + 20; $p++) {
+        $check = netstat -ano 2>$null | Select-String ":$p\s+.*LISTENING"
+        if (-not $check) { $port = $p; break }
+    }
+}
 $env:PORT = $port
 $env:PYTHONUNBUFFERED = 1
 
-# Ejecutar
-python app.py
+# ── 5. Crear directorio logs ───────────────────────────────────────
+if (-not (Test-Path "logs")) { New-Item -ItemType Directory -Force -Path "logs" | Out-Null }
+
+# ── 6. Matar procesos anteriores ───────────────────────────────────
+Log "Limpiando procesos anteriores..."
+Get-Process -Name python -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*app.py*" } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name cloudflared -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+
+# ── 7. Arrancar Flask en background ────────────────────────────────
+Log "Arrancando Flask en puerto $port..."
+$flaskLog = Join-Path $scriptDir "logs\flask.log"
+$flaskProcess = Start-Process -PassThru -NoNewWindow `
+    -FilePath ".\.venv\Scripts\python.exe" `
+    -ArgumentList "app.py" `
+    -RedirectStandardOutput $flaskLog `
+    -RedirectStandardError (Join-Path $scriptDir "logs\flask_error.log")
+
+# Esperar a que Flask responda
+Log "Esperando Flask..."
+$flaskReady = $false
+for ($i = 0; $i -lt 15; $i++) {
+    Start-Sleep -Seconds 1
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
+        if ($resp.StatusCode -ge 200) { $flaskReady = $true; break }
+    } catch {
+        try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/config" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
+            if ($resp.StatusCode -ge 200 -or $resp.StatusCode -eq 401) { $flaskReady = $true; break }
+        } catch {}
+    }
+}
+
+if (-not $flaskReady) {
+    Log "Flask no respondió en 15s. Revisa logs\flask.log" Red
+    Get-Content $flaskLog -Tail 10 -ErrorAction SilentlyContinue
+    exit 1
+}
+Log "Flask OK en http://127.0.0.1:$port"
+
+# ── 8. Arrancar cloudflared tunnel ─────────────────────────────────
+$tunnelUrl = $null
+
+if (-not $NoTunnel) {
+    Log "Arrancando cloudflared tunnel..."
+    $tunnelLog = Join-Path $scriptDir "logs\tunnel.log"
+
+    $tunnelProcess = Start-Process -PassThru -NoNewWindow `
+        -FilePath "cloudflared" `
+        -ArgumentList "tunnel","--url","http://localhost:$port" `
+        -RedirectStandardOutput (Join-Path $scriptDir "logs\tunnel_stdout.log") `
+        -RedirectStandardError $tunnelLog
+
+    # Esperar a que aparezca la URL en el log
+    Log "Esperando URL del túnel..."
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Seconds 1
+        if (Test-Path $tunnelLog) {
+            $match = Select-String -Path $tunnelLog -Pattern "https://[a-z0-9-]+\.trycloudflare\.com" | Select-Object -First 1
+            if ($match) {
+                $tunnelUrl = [regex]::Match($match.Line, "https://[a-z0-9-]+\.trycloudflare\.com").Value
+                break
+            }
+        }
+    }
+
+    if (-not $tunnelUrl) {
+        Log "No se obtuvo URL del túnel en 20s. Revisa logs\tunnel.log" Yellow
+    } else {
+        Log "Túnel activo: $tunnelUrl"
+    }
+}
+
+# ── 9. Actualizar credentials.h del STM32 ──────────────────────────
+if ($tunnelUrl -and -not $NoUpdateCredentials) {
+    $credFile = Join-Path $scriptDir "..\Core\Inc\credentials.h"
+    if (Test-Path $credFile) {
+        $hostOnly = $tunnelUrl -replace "https://", ""
+        $content = Get-Content $credFile -Raw
+
+        $content = $content -replace '(#define\s+BACKEND_CONFIG_URL\s+")[^"]*(")', "`$1${tunnelUrl}/config`$2"
+        $content = $content -replace '(#define\s+BACKEND_UPLOAD_URL\s+")[^"]*(")', "`$1${tunnelUrl}/upload`$2"
+        $content = $content -replace '(#define\s+BACKEND_HOST\s+")[^"]*(")', "`$1${hostOnly}`$2"
+
+        Set-Content $credFile $content -NoNewline
+        Log "credentials.h actualizado con nueva URL"
+    } else {
+        Log "credentials.h no encontrado en $credFile" Yellow
+    }
+}
+
+# ── 10. Guardar tunnel_url.txt ─────────────────────────────────────
+if ($tunnelUrl) {
+    $ts = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+    "$tunnelUrl`nTIMESTAMP=$ts" | Set-Content "tunnel_url.txt"
+}
+
+# ── 11. Resumen ────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "================================================" -ForegroundColor Green
+Write-Host " AWTAS Backend ACTIVO" -ForegroundColor Green
+Write-Host "================================================" -ForegroundColor Green
+Write-Host " Local:     http://localhost:$port" -ForegroundColor Cyan
+Write-Host " Dashboard: http://localhost:$port/dashboard" -ForegroundColor Cyan
+if ($tunnelUrl) {
+    Write-Host " Tunnel:    $tunnelUrl" -ForegroundColor Yellow
+    Write-Host " Upload:    $tunnelUrl/upload" -ForegroundColor Yellow
+    Write-Host " Config:    $tunnelUrl/config" -ForegroundColor Yellow
+}
+Write-Host ""
+Write-Host " PIDs: Flask=$($flaskProcess.Id) Tunnel=$($tunnelProcess.Id)" -ForegroundColor DarkGray
+Write-Host " Para detener: Stop-Process -Id $($flaskProcess.Id),$($tunnelProcess.Id)" -ForegroundColor DarkGray
+Write-Host "================================================" -ForegroundColor Green
+Write-Host ""
+
+# Mantener vivo — Ctrl+C para detener
+try {
+    Wait-Process -Id $flaskProcess.Id
+} catch {
+    Log "Deteniendo..." Yellow
+    Stop-Process -Id $flaskProcess.Id -Force -ErrorAction SilentlyContinue
+    if ($tunnelProcess) { Stop-Process -Id $tunnelProcess.Id -Force -ErrorAction SilentlyContinue }
+}
